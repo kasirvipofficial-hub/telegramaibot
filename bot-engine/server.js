@@ -394,7 +394,7 @@ async function executeVideoGeneration(chatId, messageId) {
         userStates.delete(chatId); // Clear session
 
         if (res.ok) {
-            return sendMarkdownV2Text(chatId, escapeMarkdown(`✅ *ANTRIAN DIMULAI!*\nJob ID: \`${result.job_id}\`\n\nSaya akan kirim videonya ke sini jika sudah matang.`));
+            return sendMarkdownV2Text(chatId, escapeMarkdown(`✅ *ANTRIAN DIMULAI!*\nJob ID: \`${result.job_id}\`\n\nSaya akan kirim videonya ke sini jika sudah matang.`, '*`'));
         } else {
             throw new Error(result.error || 'Engine Error');
         }
@@ -421,7 +421,7 @@ async function checkJobStatus(chatId, jobId) {
             if (result.status === 'done' && result.result?.url) {
                 message += `🎬 [Tonton Video](${result.result.url})`;
             }
-            await sendMarkdownV2Text(chatId, escapeMarkdown(message, '[]()'));
+            await sendMarkdownV2Text(chatId, escapeMarkdown(message, '*`[]()'));
         } else {
             throw new Error(result.error);
         }
