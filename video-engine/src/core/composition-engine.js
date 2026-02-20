@@ -417,9 +417,10 @@ export default {
 
         // 9. Subtitles
         if (assFile) {
-            const fontsDir = path.resolve('src/assets/fonts')
-                .replace(/\\/g, '/')
-                .replace(/:/g, '\\:');
+            let fontsDir = path.resolve('src/assets/fonts').replace(/\\/g, '/');
+            if (process.platform === 'win32') {
+                fontsDir = fontsDir.replace(/:/g, '\\:');
+            }
             // Use relative path for subtitles since we are in workDir
             filterComplex.push(`${lastVideoStream}subtitles='subs.ass':fontsdir='${fontsDir}'[vsubs]`);
             lastVideoStream = '[vsubs]';
@@ -656,7 +657,7 @@ export default {
         }
 
         const [resW, resH] = template.resolution.split('x');
-        const header = `[Script Info]\r\nScriptType: v4.00+\r\nPlayResX: ${resW}\r\nPlayResY: ${resH}\r\n\r\n[V4+ Styles]\r\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\r\n${styleConfig}\r\n\r\n[Events]\r\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\r\n`;
+        const header = `[Script Info]\nScriptType: v4.00+\nPlayResX: ${resW}\nPlayResY: ${resH}\n\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n${styleConfig}\n\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n`;
 
         const events = subtitles.map(sub => {
             const start = this.formatTime(sub.start);
@@ -668,7 +669,7 @@ export default {
             // Note: Currently we only support one 'Default' style per file for simplicity,
             // but we pick it up from sub.style if provided.
             return `Dialogue: 0,${start},${end},Default,,0,0,0,,${subAnim}${sub.text}`;
-        }).join('\r\n');
+        }).join('\n');
 
         await fs.writeFile(outputPath, '\ufeff' + header + events);
     },

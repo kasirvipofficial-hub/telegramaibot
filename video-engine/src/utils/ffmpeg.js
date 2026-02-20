@@ -105,16 +105,23 @@ export async function probeFile(filePath) {
 
 function downloadWithCurl(url, destPath) {
     return new Promise((resolve, reject) => {
-        const curl = spawn('curl.exe', [
+        const isWin = process.platform === 'win32';
+        const curlCmd = isWin ? 'curl.exe' : 'curl';
+        const curlArgs = [
             '-L',             // Follow redirects
             '-o', destPath,
             '--max-filesize', String(MAX_DOWNLOAD_SIZE),
             '--max-time', '120',  // 2 min timeout
             '-f',             // Fail on HTTP errors
-            '--ssl-no-revoke', // Avoid CRL check issues on Windows
             '-H', 'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
             url
-        ]);
+        ];
+
+        if (isWin) {
+            curlArgs.push('--ssl-no-revoke'); // Avoid CRL check issues on Windows
+        }
+
+        const curl = spawn(curlCmd, curlArgs);
 
         curl.on('close', (code) => {
             if (code === 0) resolve(destPath);

@@ -12,7 +12,9 @@ sudo apt-get update && sudo apt-get upgrade -y
 
 # 2. Install Essential Tools
 echo "🛠️ Installing essential tools (curl, git, ffmpeg, imagemagick)..."
-sudo apt-get install -y curl git ffmpeg imagemagick fonts-noto-cjk fonts-noto-color-emoji
+# Agree to Microsoft EULA automatically for fonts
+echo ttf-mscorefonts-installer msttcorefonts/accepted-mscorefonts-eula select true | sudo debconf-set-selections
+sudo apt-get install -y curl git ffmpeg imagemagick fonts-noto-cjk fonts-noto-color-emoji ttf-mscorefonts-installer
 
 # 3. Install Node.js (via NodeSource)
 if ! command -v node &> /dev/null; then
