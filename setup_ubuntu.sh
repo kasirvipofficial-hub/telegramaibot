@@ -74,7 +74,7 @@ if [ "$SETUP_DOMAIN" == "y" ]; then
     sudo ufw allow 'Nginx Full'
     sudo ufw --force enable
 
-    echo " konfigurasi Nginx for $MY_DOMAIN..."
+    echo "🏗️ Configuring Nginx for $MY_DOMAIN..."
     cat <<EOF | sudo tee /etc/nginx/sites-available/$MY_DOMAIN
 server {
     listen 80;
