@@ -20,7 +20,7 @@ export default {
     },
     ffmpeg: {
         threads: 1, // Strict requirement
-        timeout: 300 // 5 minutes default timeout
+        timeout: 1200 // 20 minutes to handle complex 60s renders on VPS
     },
     queue: {
         assemblyConcurrency: 2,
