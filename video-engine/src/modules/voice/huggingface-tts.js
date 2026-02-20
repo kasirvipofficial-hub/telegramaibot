@@ -20,7 +20,7 @@ export default {
     async generateVoiceOver(options) {
         let apiKey = process.env.HF_API_KEY;
         const model = options.model || 'facebook/mms-tts-ind';
-        const baseUrl = `https://api-inference.huggingface.co/models/${model}`;
+        const baseUrl = `https://router.huggingface.co/hf-inference/models/${model}`;
 
         if (!apiKey || apiKey === 'your_huggingface_token_here') {
             throw new Error('HF_API_KEY is not configured in .env');

@@ -1,5 +1,5 @@
-
-import { Kokoro } from 'kokoro-js';
+import * as KokoroJS from 'kokoro-js';
+const Kokoro = KokoroJS.Kokoro || KokoroJS.KokoroTTS || KokoroJS.default;
 import fs from 'fs/promises';
 import path from 'path';
 
