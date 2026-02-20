@@ -74,8 +74,19 @@ server {
     listen 80;
     server_name $MY_DOMAIN;
 
+    # Primary: Bot Engine (Port 3001)
     location / {
-        proxy_pass http://localhost:3000;
+        proxy_pass http://localhost:3001;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host \$host;
+        proxy_cache_bypass \$http_upgrade;
+    }
+
+    # Optional: Video Engine API (Port 3000)
+    location /engine/ {
+        proxy_pass http://localhost:3000/;
         proxy_http_version 1.1;
         proxy_set_header Upgrade \$http_upgrade;
         proxy_set_header Connection 'upgrade';
