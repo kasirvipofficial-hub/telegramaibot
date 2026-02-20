@@ -346,7 +346,11 @@ async function executeVideoGeneration(chatId, messageId) {
 
     // Distribution of clips based on duration
     const numClips = Math.max(3, Math.ceil(duration / 4)); // At least 3 clips, approx 4s each
-    const clipDuration = duration / numClips;
+
+    // We add 0.5s to each clip (except the last one if we want to be precise, 
+    // but adding to all is safer for 'shortest' logic) to account for xfade overlaps.
+    const transitionOverlap = 0.5;
+    const clipDuration = (duration / numClips) + transitionOverlap;
 
     // Formulate clips based on source
     let clips = [];

@@ -513,16 +513,19 @@ export default {
         }
 
         let lastAudioStream;
-        if (audioMixInputs.length > 1) {
-            let mixIn = '';
-            if (voStream) mixIn += voStream;
-            if (musicStream) mixIn += musicStream;
+        if (audioMixInputs.length > 0) {
+            // Add a long silent base to ensure the mix duration is driven by video/music longest, 
+            // but we use -shortest in the final command to clip to video.
+            // Actually, we want a silent track that is definitely longer than the video 
+            // so that amix with duration=longest doesn't truncate based on audio.
+            filterComplex.push('anullsrc=channel_layout=stereo:sample_rate=44100,atrim=duration=600[asil]');
+            audioMixInputs.push('[asil]');
+
+            let mixIn = audioMixInputs.join('');
             filterComplex.push(`${mixIn}amix=inputs=${audioMixInputs.length}:duration=longest:dropout_transition=2[amix]`);
             lastAudioStream = '[amix]';
-        } else if (audioMixInputs.length === 1) {
-            lastAudioStream = voStream || musicStream;
         } else {
-            filterComplex.push('anullsrc=channel_layout=stereo:sample_rate=44100,atrim=duration=300[asil]');
+            filterComplex.push('anullsrc=channel_layout=stereo:sample_rate=44100,atrim=duration=600[asil]');
             lastAudioStream = '[asil]';
         }
 
