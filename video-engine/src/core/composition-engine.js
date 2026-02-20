@@ -11,6 +11,7 @@ import SrtParser from '../modules/text/srt-parser.js';
 import WordHighlight from '../modules/text/word-highlight.js';
 import OpenAITTS from '../modules/voice/openai-tts.js';
 import HuggingFaceTTS from '../modules/voice/huggingface-tts.js';
+import KokoroTTS from '../modules/voice/kokoro-tts.js';
 
 // Resolution presets
 const RESOLUTION_PRESETS = {
@@ -147,12 +148,43 @@ export default {
                 let voResult;
 
                 console.log(`Job ${job.id}: Calling TTS provider: ${provider}`);
-                if (provider === 'openai') {
-                    voResult = await OpenAITTS.generateVoiceOver(ttsOptions);
-                } else if (provider === 'huggingface') {
-                    voResult = await HuggingFaceTTS.generateVoiceOver(ttsOptions);
-                } else {
-                    voResult = await KieVoice.generateVoiceOver(ttsOptions);
+
+                // --- Fallback Mechanism ---
+                const providers = [provider, 'openai', 'huggingface', 'kokoro'];
+                const tried = new Set();
+                let lastErr = null;
+
+                for (const p of providers) {
+                    if (tried.has(p)) continue;
+                    tried.add(p);
+
+                    try {
+                        onProgress({ stage: 'tts', message: `Generating voice-over (${p})` });
+                        if (p === 'openai') {
+                            if (!process.env.OPENAI_API_KEY && !process.env.OPENAI_TTS_API_KEY) continue;
+                            voResult = await OpenAITTS.generateVoiceOver(ttsOptions);
+                        } else if (p === 'huggingface') {
+                            if (!process.env.HF_API_KEY) continue;
+                            voResult = await HuggingFaceTTS.generateVoiceOver(ttsOptions);
+                        } else if (p === 'kokoro') {
+                            // Self-hosted, always try as last resort
+                            voResult = await KokoroTTS.generateVoiceOver(ttsOptions);
+                        } else {
+                            // Default to Kie or whatever requested
+                            voResult = await KieVoice.generateVoiceOver(ttsOptions);
+                        }
+
+                        // If we reached here, TTS succeeded!
+                        console.log(`Job ${job.id}: TTS succeeded with provider: ${p}`);
+                        break;
+                    } catch (err) {
+                        console.warn(`Job ${job.id}: TTS provider ${p} failed: ${err.message}`);
+                        lastErr = err;
+                    }
+                }
+
+                if (!voResult) {
+                    throw new Error(`All TTS providers failed. Last error: ${lastErr?.message}`);
                 }
 
                 console.log(`Job ${job.id}: TTS result received: ${JSON.stringify(voResult).substring(0, 100)}...`);

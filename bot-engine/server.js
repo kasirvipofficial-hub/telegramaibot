@@ -407,7 +407,12 @@ async function checkJobStatus(chatId, jobId) {
         const result = await res.json();
         if (res.ok) {
             let message = `📊 *Status Job:* \`${result.status}\`\n`;
-            if (result.progress) message += `⏳ Progress: \`${result.progress}%\`\n`;
+            if (result.progress) {
+                const progressText = typeof result.progress === 'object'
+                    ? (result.progress.message || result.progress.stage || 'Processing')
+                    : `${result.progress}%`;
+                message += `⏳ Progress: \`${progressText}\`\n`;
+            }
             if (result.status === 'done' && result.result?.url) {
                 message += `🎬 [Tonton Video](${result.result.url})`;
             }
