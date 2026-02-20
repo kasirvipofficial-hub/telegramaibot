@@ -60,6 +60,37 @@ if [ ! -f "$REPO_DIR/video-engine/.env" ]; then
     cp "$REPO_DIR/video-engine/.env.example" "$REPO_DIR/video-engine/.env" 2>/dev/null || echo "PORT=3000" > "$REPO_DIR/video-engine/.env"
 fi
 
+# 9. OPTIONAL: Nginx & Domain Setup
+echo ""
+read -p "🌐 Do you want to setup Nginx Reverse Proxy & SSL (HTTPS)? (y/n): " SETUP_DOMAIN
+if [ "$SETUP_DOMAIN" == "y" ]; then
+    read -p "👉 Enter your domain name (e.g. bot.kamu.com): " MY_DOMAIN
+    echo "🏗️ Installing Nginx & Certbot..."
+    sudo apt-get install -y nginx certbot python3-certbot-nginx
+
+    echo " konfigurasi Nginx for $MY_DOMAIN..."
+    cat <<EOF | sudo tee /etc/nginx/sites-available/$MY_DOMAIN
+server {
+    listen 80;
+    server_name $MY_DOMAIN;
+
+    location / {
+        proxy_pass http://localhost:3000;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host \$host;
+        proxy_cache_bypass \$http_upgrade;
+    }
+}
+EOF
+    sudo ln -s /etc/nginx/sites-available/$MY_DOMAIN /etc/nginx/sites-enabled/
+    sudo nginx -t && sudo systemctl restart nginx
+
+    echo "🔒 Attemping to get SSL Certificate from Let's Encrypt..."
+    sudo certbot --nginx -d $MY_DOMAIN --non-interactive --agree-tos --email webmaster@$MY_DOMAIN
+fi
+
 echo ""
 echo "✅ SETUP COMPLETE!"
 echo "-------------------------------------------------------"
