@@ -26,7 +26,7 @@ export default {
 
         try {
             if (!kokoroInstance) {
-                kokoroInstance = await Kokoro.from_pretrained('hexgrad/Kokoro-82M', {
+                kokoroInstance = await Kokoro.from_pretrained('onnx-community/Kokoro-82M-v1.0-ONNX', {
                     dtype: 'q8', // Quantized for better performance on CPU
                     device: 'cpu',
                 });
