@@ -68,6 +68,12 @@ if [ "$SETUP_DOMAIN" == "y" ]; then
     echo "🏗️ Installing Nginx & Certbot..."
     sudo apt-get install -y nginx certbot python3-certbot-nginx
 
+    echo "🛡️ Configuring Firewall (UFW) to allow HTTP/HTTPS..."
+    sudo ufw allow 80/tcp
+    sudo ufw allow 443/tcp
+    sudo ufw allow 'Nginx Full'
+    sudo ufw --force enable
+
     echo " konfigurasi Nginx for $MY_DOMAIN..."
     cat <<EOF | sudo tee /etc/nginx/sites-available/$MY_DOMAIN
 server {
