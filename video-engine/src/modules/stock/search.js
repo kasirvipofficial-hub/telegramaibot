@@ -49,7 +49,7 @@ export default {
         const params = new URLSearchParams({
             query,
             orientation,
-            per_page: '5',
+            per_page: '20',
             size: 'medium'
         });
 
@@ -75,8 +75,8 @@ export default {
         }
         if (videos.length === 0) videos = data.videos; // fallback
 
-        // Pick the first usable video, prefer HD file
-        const video = videos[0];
+        // Pick a random usable video from the results to prevent repeating scenes
+        const video = videos[Math.floor(Math.random() * videos.length)];
         const hdFile = video.video_files.find(f =>
             f.quality === 'hd' && f.width >= 720
         ) || video.video_files[0];
@@ -100,7 +100,7 @@ export default {
             key: apiKey,
             q: query,
             video_type: 'film',
-            per_page: '5',
+            per_page: '20',
             orientation: typeMap[orientation] || 'all'
         });
 
@@ -116,7 +116,8 @@ export default {
         }
         if (hits.length === 0) hits = data.hits;
 
-        const hit = hits[0];
+        // Pick a random usable video from the results to prevent repeating scenes
+        const hit = hits[Math.floor(Math.random() * hits.length)];
         // Prefer medium or large video
         const videoData = hit.videos.medium || hit.videos.large || hit.videos.small;
 
