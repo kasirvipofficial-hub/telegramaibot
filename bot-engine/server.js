@@ -298,7 +298,8 @@ async function askTTS(chatId, messageId) {
         inline_keyboard: [
             [{ text: '💎 Kie.ai (ElevenLabs - Pro)', callback_data: 'tts_kie' }],
             [{ text: '🤗 Hugging Face (Open Source)', callback_data: 'tts_huggingface' }],
-            [{ text: '🤖 OpenAI (Standard)', callback_data: 'tts_openai' }]
+            [{ text: '🤖 OpenAI (Standard)', callback_data: 'tts_openai' }],
+            [{ text: '🍦 Kokoro (Self-hosted - GRATIS)', callback_data: 'tts_kokoro' }]
         ]
     };
     return editMessageText(chatId, messageId, message, keyboard);
@@ -324,7 +325,7 @@ async function askConfirmation(chatId, messageId) {
         `🏷️ *Judul:* ${escapeMarkdown(title)}\n` +
         `🎨 *Style:* \`${style}\`\n` +
         `⏳ *Durasi:* \`${duration} Detik\`\n` +
-        `🎤 *Voice:* \`${tts_provider === 'kie' ? 'Kie.ai' : (tts_provider === 'huggingface' ? 'Hugging Face' : 'OpenAI')}\`\n` +
+        `🎤 *Voice:* \`${tts_provider === 'kie' ? 'Kie.ai' : (tts_provider === 'huggingface' ? 'Hugging Face' : (tts_provider === 'kokoro' ? 'Kokoro' : 'OpenAI'))}\`\n` +
         `📂 *Sumber:* \`${source}\`\n\n` +
         `Siap untuk produksi sekarang?`;
 
@@ -367,7 +368,7 @@ async function executeVideoGeneration(chatId, messageId) {
             voice_over: {
                 text: narasi,
                 provider: tts_provider || 'kie',
-                voice: tts_provider === 'openai' ? 'onyx' : (tts_provider === 'huggingface' ? 'facebook/mms-tts-ind' : 'tnSpp4vdxKPjI9w0GnoV'),
+                voice: tts_provider === 'openai' ? 'onyx' : (tts_provider === 'huggingface' ? 'facebook/mms-tts-ind' : (tts_provider === 'kokoro' ? 'af_heart' : 'tnSpp4vdxKPjI9w0GnoV')),
                 word_highlight: tts_provider === 'kie', // Only Kie supports highlight for now
                 language_code: 'id'
             },
