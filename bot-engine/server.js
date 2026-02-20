@@ -250,9 +250,9 @@ async function onCallbackQuery(query) {
         return askTTS(chatId, messageId);
     }
 
-    // TTS Provider Selection
-    if (data.startsWith('tts_')) {
-        state.data.tts_provider = data.replace('tts_', '');
+    // Voice Character Selection
+    if (data.startsWith('vox_')) {
+        state.data.voice_choice = data.replace('vox_', '');
         return askSource(chatId, messageId);
     }
 
@@ -293,13 +293,14 @@ async function askDuration(chatId, messageId) {
 }
 
 async function askTTS(chatId, messageId) {
-    const message = '🎤 *Pilih Penyedia Suara AI:*';
+    const message = '🎤 *Pilih Karakter Suara Narator:*';
     const keyboard = {
         inline_keyboard: [
-            [{ text: '💎 Kie.ai (ElevenLabs - Pro)', callback_data: 'tts_kie' }],
-            [{ text: '🤗 Hugging Face (Open Source)', callback_data: 'tts_huggingface' }],
-            [{ text: '🤖 OpenAI (Standard)', callback_data: 'tts_openai' }],
-            [{ text: '🍦 Kokoro (Self-hosted - GRATIS)', callback_data: 'tts_kokoro' }]
+            [{ text: '👨 Ardi (Lembut & Hangat)', callback_data: 'vox_ardi' }],
+            [{ text: '👨 Wibowo (Jantan Berwibawa)', callback_data: 'vox_wibowo' }],
+            [{ text: '👩 Gadis (Perempuan Merdu)', callback_data: 'vox_gadis' }],
+            [{ text: '👩 Juminten (Jawa)', callback_data: 'vox_juminten' }],
+            [{ text: '👨 Asep (Sunda)', callback_data: 'vox_asep' }]
         ]
     };
     return editMessageText(chatId, messageId, message, keyboard);
@@ -319,13 +320,20 @@ async function askSource(chatId, messageId) {
 
 async function askConfirmation(chatId, messageId) {
     const state = userStates.get(chatId);
-    const { title, style, duration, source, tts_provider } = state.data;
+    const { title, style, duration, source, voice_choice } = state.data;
+
+    let voiceName = 'Suara AI';
+    if (voice_choice === 'ardi') voiceName = 'Ardi (Male)';
+    else if (voice_choice === 'wibowo') voiceName = 'Wibowo (Male)';
+    else if (voice_choice === 'gadis') voiceName = 'Gadis (Female)';
+    else if (voice_choice === 'juminten') voiceName = 'Juminten (Jawa)';
+    else if (voice_choice === 'asep') voiceName = 'Asep (Sunda)';
 
     const message = `🚩 *Konfirmasi Pesanan Video*\n\n` +
         `🏷️ *Judul:* ${escapeMarkdown(title)}\n` +
         `🎨 *Style:* \`${style}\`\n` +
         `⏳ *Durasi:* \`${duration} Detik\`\n` +
-        `🎤 *Voice:* \`${tts_provider === 'kie' ? 'Kie.ai' : (tts_provider === 'huggingface' ? 'Hugging Face' : (tts_provider === 'kokoro' ? 'Kokoro' : 'OpenAI'))}\`\n` +
+        `🎤 *Voice:* \`${voiceName}\`\n` +
         `📂 *Sumber:* \`${source}\`\n\n` +
         `Siap untuk produksi sekarang?`;
 
@@ -340,9 +348,17 @@ async function askConfirmation(chatId, messageId) {
 
 async function executeVideoGeneration(chatId, messageId) {
     const state = userStates.get(chatId);
-    const { topic, narasi, style, duration, asset_keywords, source, tts_provider } = state.data;
+    const { topic, narasi, style, duration, asset_keywords, source, voice_choice } = state.data;
 
     await editMessageText(chatId, messageId, '⚙️ *Menghubungi Pabrik Video...* Pesanan Anda sedang diproses\\.');
+
+    // Voice mapping for Hugging Face Gradio Space
+    let mappedVoice = 'Juminten - Suara perempuan jawa (bahasa jawa)'; // Default fallback
+    if (voice_choice === 'ardi') mappedVoice = 'Ardi - Suara lembut dan hangat';
+    else if (voice_choice === 'wibowo') mappedVoice = 'Wibowo - Suara jantan berwibawa';
+    else if (voice_choice === 'gadis') mappedVoice = 'Gadis - Suara perempuan yang merdu';
+    else if (voice_choice === 'juminten') mappedVoice = 'Juminten - Suara perempuan jawa (bahasa jawa)';
+    else if (voice_choice === 'asep') mappedVoice = 'Asep - Suara lelaki sunda (bahasa sunda)';
 
     // Distribution of clips based on duration
     const numClips = Math.max(3, Math.ceil(duration / 4)); // At least 3 clips, approx 4s each
@@ -371,9 +387,9 @@ async function executeVideoGeneration(chatId, messageId) {
             clips: clips,
             voice_over: {
                 text: narasi,
-                provider: tts_provider || 'kie',
-                voice: tts_provider === 'openai' ? 'onyx' : (tts_provider === 'huggingface' ? 'facebook/mms-tts-ind' : (tts_provider === 'kokoro' ? 'af_heart' : 'tnSpp4vdxKPjI9w0GnoV')),
-                word_highlight: tts_provider === 'kie', // Only Kie supports highlight for now
+                provider: 'huggingface', // Hardcode to Custom Space Gradio
+                voice: mappedVoice,
+                word_highlight: false, // Turn off Kie.ai highlight since we use HF
                 language_code: 'id'
             },
             template_overrides: {

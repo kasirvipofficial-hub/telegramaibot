@@ -11,7 +11,7 @@ import SrtParser from '../modules/text/srt-parser.js';
 import WordHighlight from '../modules/text/word-highlight.js';
 import OpenAITTS from '../modules/voice/openai-tts.js';
 import HuggingFaceTTS from '../modules/voice/huggingface-tts.js';
-import KokoroTTS from '../modules/voice/kokoro-tts.js';
+
 
 // Resolution presets
 const RESOLUTION_PRESETS = {
@@ -150,7 +150,7 @@ export default {
                 console.log(`Job ${job.id}: Calling TTS provider: ${provider}`);
 
                 // --- Fallback Mechanism ---
-                const providers = [provider, 'openai', 'huggingface', 'kokoro'];
+                const providers = [provider, 'openai', 'huggingface', 'edge'];
                 const tried = new Set();
                 let lastErr = null;
 
@@ -166,7 +166,7 @@ export default {
                         } else if (p === 'huggingface') {
                             if (!process.env.HF_API_KEY) continue;
                             voResult = await HuggingFaceTTS.generateVoiceOver(ttsOptions);
-                        } else if (p === 'kokoro') {
+                        } else if (p === 'edge') {
                             // Self-hosted, always try as last resort
                             voResult = await KokoroTTS.generateVoiceOver(ttsOptions);
                         } else {

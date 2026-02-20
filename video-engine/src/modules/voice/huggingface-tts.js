@@ -1,62 +1,88 @@
-
-import { fetch } from 'undici';
 import fs from 'fs/promises';
 import path from 'path';
 
 /**
- * Hugging Face TTS Provider Module
- * Uses the Inference API to generate speech.
+ * Service untuk memanggil API TTS Hugging Face
  */
+const TTS_CONFIG = {
+    // Gunakan URL utama atau URL replica jika ingin lebih cepat
+    baseUrl: "https://kasirvipofficial-tts-indonesia.hf.space",
+    fnIndex: 1
+};
+
 export default {
     /**
-     * Generate Voice Over using Hugging Face Inference API
+     * Generate Voice Over using Custom Gradio Space
      * 
      * @param {Object} options 
      * @param {string} options.text - Text to convert to speech
-     * @param {string} [options.model] - Model ID (e.g., 'facebook/mms-tts-ind')
-     * @param {string} [options.workDir] - Directory to save the temporary audio file
+     * @param {string} [options.voice] - Speaker name e.g. "Gadis - ..."
+     * @param {number} [options.speed] - 0.1 to 1.99
+     * @param {string} [options.workDir] - Directory to save the audio
      * @returns {Promise<Object>} Result containing local file path
      */
     async generateVoiceOver(options) {
-        let apiKey = process.env.HF_API_KEY;
-        const model = options.model || 'facebook/mms-tts-ind';
-        const baseUrl = `https://router.huggingface.co/hf-inference/models/${model}`;
+        // Use the exact string name for the speaker dropdown
+        let speaker = options.voice || 'Juminten - Suara perempuan jawa (bahasa jawa)';
+        let speed = options.speed || 1.0;
+        let language = "Indonesian";
 
-        if (!apiKey || apiKey === 'your_huggingface_token_here') {
-            throw new Error('HF_API_KEY is not configured in .env');
+        console.log(`[Custom Gradio TTS] Generating voice | Speaker: ${speaker.split(',')[0]} | Text: "${options.text.substring(0, 30)}..."`);
+
+        try {
+            const gradioUrl = `${TTS_CONFIG.baseUrl}/run/predict`;
+
+            // 1. Post request asking for prediction targeting /run/predict
+            const postRes = await fetch(gradioUrl, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    fn_index: TTS_CONFIG.fnIndex,
+                    data: [
+                        options.text,
+                        speaker,
+                        speed,
+                        language
+                    ]
+                })
+            });
+
+            if (!postRes.ok) throw new Error(`Failed to initiate Gradio task: ${postRes.status} ${postRes.statusText}`);
+            const responseData = await postRes.json();
+
+            if (!responseData.data || !responseData.data[0]) {
+                throw new Error("Invalid response from Gradio API: missing data array.");
+            }
+
+            const fileData = responseData.data[0];
+            const resultDataUrl = `${TTS_CONFIG.baseUrl}/file=${fileData.name}`;
+
+            console.log(`[Custom Gradio TTS] Task complete. Downloading from URL: ${resultDataUrl}`);
+
+            // 3. Download the finished audio file
+            const fileRes = await fetch(resultDataUrl);
+            if (!fileRes.ok) throw new Error(`Failed to download audio from Gradio. Status: ${fileRes.status}`);
+
+            const workDir = options.workDir || path.resolve('tmp');
+            await fs.mkdir(workDir, { recursive: true });
+
+            // Generate valid file extension
+            const ext = fileData.orig_name ? path.extname(fileData.orig_name) : '.wav';
+            const voPath = path.join(workDir, `vo_gradio_${Date.now()}${ext}`);
+
+            const buffer = await fileRes.arrayBuffer();
+            await fs.writeFile(voPath, Buffer.from(buffer));
+
+            console.log(`[Custom Gradio TTS] Download complete, saved to ${voPath}`);
+
+            return {
+                url: voPath,
+                timestamps: null,
+                provider: 'huggingface'
+            };
+        } catch (err) {
+            console.error(`[Custom Gradio TTS] API Error:`, err);
+            throw new Error(`Custom Gradio TTS Error: ${err.message}`);
         }
-
-        console.log(`[Hugging Face TTS] Generating voice | Model: ${model}`);
-
-        const response = await fetch(baseUrl, {
-            method: 'POST',
-            headers: {
-                'Authorization': `Bearer ${apiKey}`,
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-                inputs: options.text
-            })
-        });
-
-        if (!response.ok) {
-            const errText = await response.text();
-            console.error(`[Hugging Face TTS] API Error: ${response.status} - ${errText}`);
-            throw new Error(`Hugging Face TTS Error: ${response.status} - ${errText}`);
-        }
-
-        // Save response to a temporary file in the workDir if provided, else a global temp
-        const workDir = options.workDir || path.resolve('tmp');
-        const voPath = path.join(workDir, `vo_hf_${Date.now()}.wav`);
-
-        console.log(`[Hugging Face TTS] Response OK, saving to ${voPath}`);
-        const buffer = await response.arrayBuffer();
-        await fs.writeFile(voPath, Buffer.from(buffer));
-
-        return {
-            url: voPath,
-            timestamps: null, // Basic HF Inference API doesn't provide word timestamps
-            provider: 'huggingface'
-        };
     }
 };
