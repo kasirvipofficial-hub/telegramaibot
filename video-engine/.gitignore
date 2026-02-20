@@ -1,0 +1,35 @@
+# Dependencies
+node_modules/
+
+# Environment
+.env
+.env.local
+.env.production
+
+# Temp & Data (runtime)
+tmp/
+data/
+jobs/
+
+# Build artifacts
+comp_audio.wav
+comp_video.mp4
+
+# Debug logs
+ffmpeg_debug.log
+kie_debug.log
+*.log
+
+# Test scripts (dev only)
+test_*.js
+manual_test.js
+create_*.js
+validate_all.js
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/

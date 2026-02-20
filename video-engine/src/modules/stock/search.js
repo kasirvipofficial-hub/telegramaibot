@@ -1,0 +1,130 @@
+/**
+ * Stock Asset Module
+ * Auto-fetch video clips from Pexels and Pixabay by keyword search.
+ */
+// Use globalThis.fetch to avoid undici ESM/CJS issues in some environments
+const fetch = globalThis.fetch;
+
+const PEXELS_BASE = 'https://api.pexels.com/videos/search';
+const PIXABAY_BASE = 'https://pixabay.com/api/videos/';
+
+export default {
+    /**
+     * Search for a stock video clip by keyword
+     * @param {string} query - Search keyword
+     * @param {Object} [options]
+     * @param {string} [options.orientation] - 'portrait' | 'landscape' | 'square'
+     * @param {number} [options.minDuration] - Minimum clip duration in seconds
+     * @param {string} [options.provider] - Force a provider: 'pexels' | 'pixabay'
+     * @returns {Promise<{url: string, provider: string, duration: number}>}
+     */
+    async searchVideo(query, options = {}) {
+        const orientation = options.orientation || 'portrait';
+
+        // Try Pexels first, fallback to Pixabay
+        const providers = options.provider
+            ? [options.provider]
+            : ['pexels', 'pixabay'];
+
+        for (const provider of providers) {
+            try {
+                if (provider === 'pexels') {
+                    const result = await this.searchPexels(query, orientation, options.minDuration);
+                    if (result) return { ...result, provider: 'pexels' };
+                } else if (provider === 'pixabay') {
+                    const result = await this.searchPixabay(query, orientation, options.minDuration);
+                    if (result) return { ...result, provider: 'pixabay' };
+                }
+            } catch (e) {
+                console.warn(`[Stock] ${provider} search failed for "${query}": ${e.message}`);
+            }
+        }
+        throw new Error(`No stock video found for "${query}"`);
+    },
+
+    async searchPexels(query, orientation, minDuration) {
+        const apiKey = process.env.PEXELS_API_KEY;
+        if (!apiKey) return null;
+
+        const params = new URLSearchParams({
+            query,
+            orientation,
+            per_page: '5',
+            size: 'medium'
+        });
+
+        console.log(`[Stock] Pexels searching: ${query} (${orientation})`);
+        const res = await fetch(`${PEXELS_BASE}?${params}`, {
+            headers: { 'Authorization': apiKey }
+        });
+
+        if (!res.ok) {
+            const errText = await res.text();
+            console.error(`[Stock] Pexels error: ${res.status} - ${errText}`);
+            throw new Error(`Pexels HTTP ${res.status}`);
+        }
+        const data = await res.json();
+        console.log(`[Stock] Pexels found ${data.total_results} results`);
+
+        if (!data.videos || data.videos.length === 0) return null;
+
+        // Filter by min duration if specified
+        let videos = data.videos;
+        if (minDuration) {
+            videos = videos.filter(v => v.duration >= minDuration);
+        }
+        if (videos.length === 0) videos = data.videos; // fallback
+
+        // Pick the first usable video, prefer HD file
+        const video = videos[0];
+        const hdFile = video.video_files.find(f =>
+            f.quality === 'hd' && f.width >= 720
+        ) || video.video_files[0];
+
+        return {
+            url: hdFile.link,
+            duration: video.duration,
+            width: hdFile.width,
+            height: hdFile.height
+        };
+    },
+
+    async searchPixabay(query, orientation, minDuration) {
+        const apiKey = process.env.PIXABAY_API_KEY;
+        if (!apiKey) return null;
+
+        // Map orientation
+        const typeMap = { portrait: 'vertical', landscape: 'horizontal', square: 'all' };
+
+        const params = new URLSearchParams({
+            key: apiKey,
+            q: query,
+            video_type: 'film',
+            per_page: '5',
+            orientation: typeMap[orientation] || 'all'
+        });
+
+        const res = await fetch(`${PIXABAY_BASE}?${params}`);
+        if (!res.ok) throw new Error(`Pixabay HTTP ${res.status}`);
+        const data = await res.json();
+
+        if (!data.hits || data.hits.length === 0) return null;
+
+        let hits = data.hits;
+        if (minDuration) {
+            hits = hits.filter(h => h.duration >= minDuration);
+        }
+        if (hits.length === 0) hits = data.hits;
+
+        const hit = hits[0];
+        // Prefer medium or large video
+        const videoData = hit.videos.medium || hit.videos.large || hit.videos.small;
+
+        return {
+            url: videoData.url,
+            duration: hit.duration,
+            width: videoData.width,
+            height: videoData.height
+        };
+    }
+};

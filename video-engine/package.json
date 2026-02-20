@@ -1,0 +1,25 @@
+{
+  "name": "video-engine",
+  "version": "1.0.0",
+  "description": "Production-grade FFmpeg Video Engine Server",
+  "main": "src/server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.993.0",
+    "dotenv": "^17.3.1",
+    "fastify": "^4.26.0",
+    "undici": "^7.22.0",
+    "uuid": "^9.0.1"
+  },
+  "devDependencies": {
+    "pino-pretty": "^10.3.1"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
