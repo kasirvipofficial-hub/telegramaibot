@@ -393,10 +393,14 @@ export default {
 
         // 7. Concat / Transitions
         let lastVideoStream;
+        let totalVideoDuration = 0;
         if (processedClips.length === 1) {
             lastVideoStream = processedClips[0].label;
+            totalVideoDuration = processedClips[0].effectiveDuration;
         } else {
-            lastVideoStream = this.buildTransitionChain(processedClips, filterComplex);
+            const transitionResult = this.buildTransitionChain(processedClips, filterComplex);
+            lastVideoStream = transitionResult.stream;
+            totalVideoDuration = transitionResult.duration;
         }
 
         // 8. Image Overlays (watermark, logo, sticker)
@@ -514,18 +518,17 @@ export default {
 
         let lastAudioStream;
         if (audioMixInputs.length > 0) {
-            // Add a long silent base to ensure the mix duration is driven by video/music longest, 
-            // but we use -shortest in the final command to clip to video.
-            // Actually, we want a silent track that is definitely longer than the video 
-            // so that amix with duration=longest doesn't truncate based on audio.
-            filterComplex.push('anullsrc=channel_layout=stereo:sample_rate=44100,atrim=duration=600[asil]');
+            // Use precise atrim based on the calculated video duration to prevent long silent tails
+            const safeDuration = Math.ceil(totalVideoDuration || 60) + 1;
+            filterComplex.push(`anullsrc=channel_layout=stereo:sample_rate=44100,atrim=duration=${safeDuration}[asil]`);
             audioMixInputs.push('[asil]');
 
             let mixIn = audioMixInputs.join('');
             filterComplex.push(`${mixIn}amix=inputs=${audioMixInputs.length}:duration=longest:dropout_transition=2[amix]`);
             lastAudioStream = '[amix]';
         } else {
-            filterComplex.push('anullsrc=channel_layout=stereo:sample_rate=44100,atrim=duration=600[asil]');
+            const safeDuration = Math.ceil(totalVideoDuration || 60) + 1;
+            filterComplex.push(`anullsrc=channel_layout=stereo:sample_rate=44100,atrim=duration=${safeDuration}[asil]`);
             lastAudioStream = '[asil]';
         }
 
@@ -598,7 +601,8 @@ export default {
             // Simple concat
             const labels = clips.map(c => c.label).join('');
             filterComplex.push(`${labels}concat=n=${clips.length}:v=1:a=0[vout]`);
-            return '[vout]';
+            const totalDuration = clips.reduce((sum, c) => sum + c.effectiveDuration, 0);
+            return { stream: '[vout]', duration: totalDuration };
         }
 
         // Pairwise xfade chain
@@ -631,7 +635,7 @@ export default {
             currentStream = outLabel;
         }
 
-        return currentStream;
+        return { stream: currentStream, duration: runningOffset };
     },
 
     /**
