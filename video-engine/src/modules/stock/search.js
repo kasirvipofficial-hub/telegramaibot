@@ -127,5 +127,47 @@ export default {
             width: videoData.width,
             height: videoData.height
         };
+    },
+
+    /**
+     * Search for background music using Pixabay videos
+     * FFmpeg extracts the audio track from the video result
+     * @param {string} query - Music genre or mood keyword
+     * @returns {Promise<{url: string, duration: number, provider: string}>}
+     */
+    async searchMusic(query) {
+        const apiKey = process.env.PIXABAY_API_KEY;
+        if (!apiKey) throw new Error('PIXABAY_API_KEY not configured for music search');
+
+        // Search for short ambient/background clips with audio
+        const musicQuery = `${query} background abstract`;
+        const params = new URLSearchParams({
+            key: apiKey,
+            q: musicQuery,
+            video_type: 'film',
+            per_page: '15',
+        });
+
+        console.log(`[Stock] Pixabay music search: "${musicQuery}"`);
+        const res = await fetch(`${PIXABAY_BASE}?${params}`);
+        if (!res.ok) throw new Error(`Pixabay Music HTTP ${res.status}`);
+        const data = await res.json();
+
+        if (!data.hits || data.hits.length === 0) {
+            throw new Error(`No music found for "${query}"`);
+        }
+
+        // Prefer clips between 10-60 seconds
+        let hits = data.hits.filter(h => h.duration >= 10 && h.duration <= 60);
+        if (hits.length === 0) hits = data.hits;
+
+        const hit = hits[Math.floor(Math.random() * hits.length)];
+        const videoData = hit.videos.medium || hit.videos.large || hit.videos.small;
+
+        return {
+            url: videoData.url,
+            duration: hit.duration,
+            provider: 'pixabay'
+        };
     }
 };

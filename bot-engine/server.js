@@ -1,6 +1,7 @@
 import Fastify from 'fastify';
 import dotenv from 'dotenv';
 import path from 'path';
+import fs from 'fs';
 import OpenAI from 'openai';
 
 dotenv.config();
@@ -12,7 +13,7 @@ const TOKEN = process.env.ENV_BOT_TOKEN;
 const WEBHOOK_PATH = '/endpoint';
 const SECRET = process.env.ENV_BOT_SECRET;
 const ENGINE_BASE_URL = (process.env.ENV_ENGINE_URL || 'http://localhost:3000').replace(/\/$/, '');
-const YOUTUBE_ENGINE_URL = 'http://localhost:3002';
+const YOUTUBE_ENGINE_URL = (process.env.ENV_YOUTUBE_ENGINE_URL || 'http://localhost:3002').replace(/\/$/, '');
 
 // LLM Configuration
 const openai = new OpenAI({
@@ -20,8 +21,71 @@ const openai = new OpenAI({
     baseURL: process.env.LLM_BASE_URL || 'https://api.openai.com/v1'
 });
 
-// User Session Tracking
-const userStates = new Map(); // chatId -> { state: string, data: object }
+// === SECURITY: User Whitelist ===
+const ALLOWED_CHAT_IDS = process.env.ALLOWED_CHAT_IDS
+    ? process.env.ALLOWED_CHAT_IDS.split(',').map(id => parseInt(id.trim())).filter(Boolean)
+    : [];
+
+function isAuthorized(chatId) {
+    if (ALLOWED_CHAT_IDS.length === 0) return true;
+    return ALLOWED_CHAT_IDS.includes(chatId);
+}
+
+// === SECURITY: Rate Limiter (sliding window) ===
+class RateLimiter {
+    constructor() { this.windows = new Map(); }
+    check(key, limit, windowMs) {
+        const now = Date.now();
+        if (!this.windows.has(key)) this.windows.set(key, []);
+        const stamps = this.windows.get(key).filter(t => now - t < windowMs);
+        this.windows.set(key, stamps);
+        if (stamps.length >= limit) return false;
+        stamps.push(now);
+        return true;
+    }
+}
+const rateLimiter = new RateLimiter();
+
+// === Session Store (file-persisted) ===
+class SessionStore {
+    constructor(filePath) {
+        this.filePath = filePath;
+        this.sessions = new Map();
+        this._load();
+        setInterval(() => this._cleanup(), 10 * 60 * 1000); // cleanup every 10 min
+    }
+    _load() {
+        try {
+            if (fs.existsSync(this.filePath)) {
+                const data = JSON.parse(fs.readFileSync(this.filePath, 'utf8'));
+                for (const [k, v] of Object.entries(data)) {
+                    this.sessions.set(parseInt(k), v);
+                }
+                console.log(`📂 Loaded ${this.sessions.size} sessions from disk`);
+            }
+        } catch (e) { console.warn('Session load failed:', e.message); }
+    }
+    _save() {
+        try {
+            const obj = Object.fromEntries(this.sessions);
+            fs.writeFileSync(this.filePath, JSON.stringify(obj, null, 2));
+        } catch (e) { console.warn('Session save failed:', e.message); }
+    }
+    _cleanup(maxAgeMs = 3600000) {
+        const now = Date.now();
+        let cleaned = 0;
+        for (const [k, v] of this.sessions) {
+            if (now - (v._ts || 0) > maxAgeMs) { this.sessions.delete(k); cleaned++; }
+        }
+        if (cleaned > 0) { this._save(); console.log(`🧹 Cleaned ${cleaned} stale sessions`); }
+    }
+    get(key) { return this.sessions.get(key); }
+    set(key, value) { value._ts = Date.now(); this.sessions.set(key, value); this._save(); }
+    delete(key) { this.sessions.delete(key); this._save(); }
+}
+
+// User Session Tracking (persisted to file)
+const userStates = new SessionStore(path.resolve('sessions.json'));
 
 if (!TOKEN) {
     console.error('FATAL: ENV_BOT_TOKEN is missing in .env');
@@ -35,6 +99,16 @@ const PLATFORMS = {
     shorts: { ratio: "9:16", resolution: "1080x1920", max_duration: 60, safe_duration: [15, 30, 60] },
     youtube: { ratio: "16:9", resolution: "1920x1080", max_duration: 600, safe_duration: [60, 180, 300, 600] }
 };
+
+// --- Idempotency: Prevent duplicate delivery ---
+const deliveredJobs = new Set();
+function isAlreadyDelivered(jobId) {
+    if (deliveredJobs.has(jobId)) return true;
+    deliveredJobs.add(jobId);
+    // Auto-clean after 1 hour to prevent memory leak
+    setTimeout(() => deliveredJobs.delete(jobId), 3600000);
+    return false;
+}
 
 /**
  * UTILS & TELEGRAM API
@@ -93,11 +167,51 @@ async function editMessageText(chatId, messageId, text, replyMarkup = null) {
 }
 
 async function sendVideo(chatId, videoUrl, caption = '') {
-    return (await fetch(apiUrl('sendVideo', {
-        chat_id: chatId,
-        video: videoUrl,
-        caption
-    }))).json();
+    try {
+        console.log(`[Telegram] Fetching video from R2 for direct upload: ${videoUrl}`);
+        const videoRes = await fetch(videoUrl);
+        if (!videoRes.ok) throw new Error(`R2 Fetch Failed: ${videoRes.statusText}`);
+
+        const blob = await videoRes.blob();
+        const formData = new FormData();
+        formData.append('chat_id', chatId);
+        formData.append('caption', caption);
+        formData.append('parse_mode', 'MarkdownV2');
+        formData.append('video', blob, 'video.mp4');
+
+        const res = await fetch(apiUrl('sendVideo'), {
+            method: 'POST',
+            body: formData
+        });
+
+        const result = await res.json();
+        console.log(`[Telegram] sendVideo result for ${chatId}:`, JSON.stringify(result));
+        return result;
+    } catch (err) {
+        console.error(`[Telegram] Direct upload failed:`, err.message);
+        return { ok: false, error: err.message };
+    }
+}
+
+async function deliverJobResult(chatId, jobId, result, status, error) {
+    if (isAlreadyDelivered(jobId)) {
+        console.log(`[Delivery] skipping already delivered job: ${jobId}`);
+        return;
+    }
+
+    if (status === 'done' && result?.url) {
+        try {
+            const caption = escapeMarkdown('✅ Video Anda siap! Job: ' + jobId);
+            const res = await sendVideo(chatId, result.url, caption);
+            if (!res.ok) throw new Error(res.error || 'Upload failed');
+        } catch (sendErr) {
+            // Fallback: send link instead
+            const safeLink = escapeMarkdown(result.url, '()[]');
+            await sendMarkdownV2Text(chatId, '✅ *Video siap\\!*\\n\\n🎬 [Download Video](' + safeLink + ')');
+        }
+    } else if (status === 'failed') {
+        await sendMarkdownV2Text(chatId, escapeMarkdown(`❌ *Render Gagal:* ${error || 'Unknown'}`, '*'));
+    }
 }
 
 function escapeMarkdown(text, except = '') {
@@ -206,6 +320,17 @@ async function onUpdate(update) {
 async function onMessage(message) {
     const chatId = message.chat.id;
     const text = message.text || '';
+
+    // Security: Whitelist check
+    if (!isAuthorized(chatId)) {
+        return sendMarkdownV2Text(chatId, '🚫 Maaf, Anda tidak memiliki akses ke bot ini\\.');
+    }
+
+    // Security: Rate limiting (20 messages/minute)
+    if (!rateLimiter.check(`msg:${chatId}`, 20, 60000)) {
+        return sendMarkdownV2Text(chatId, '⏳ Terlalu banyak pesan\\. Coba lagi dalam 1 menit\\.');
+    }
+
     const state = userStates.get(chatId);
 
     if (text.startsWith('/start') || text.startsWith('/help')) {
@@ -367,6 +492,10 @@ async function onCallbackQuery(query) {
     const chatId = query.message.chat.id;
     const messageId = query.message.message_id;
     const data = query.data;
+
+    // Security: Whitelist check
+    if (!isAuthorized(chatId)) return;
+
     const state = userStates.get(chatId);
 
     if (!state) return;
@@ -478,6 +607,11 @@ async function executeVideoGeneration(chatId, messageId) {
     const state = userStates.get(chatId);
     const { ai_blueprint, voice_choice, platform } = state.data;
 
+    // Rate limit: max 3 job submissions per hour
+    if (!rateLimiter.check(`job:${chatId}`, 3, 3600000)) {
+        return sendMarkdownV2Text(chatId, '⏳ Anda sudah submit 3 video dalam 1 jam\\. Coba lagi nanti\\.');
+    }
+
     await editMessageText(chatId, messageId, '⚙️ *Merakit Composition Final\\.\\.\\.* Transmitting ke Video Engine\\.');
 
     // Voice mapping for HF
@@ -537,8 +671,11 @@ async function executeVideoGeneration(chatId, messageId) {
                 text: fullText,
                 provider: 'huggingface',
                 voice: mappedVoice,
-                word_highlight: true, // Specific rule needed per blueprint to highlight timing per phrase
+                word_highlight: true,
                 language_code: 'id'
+            },
+            music: {
+                query: ai_blueprint.music_plan?.genre || ai_blueprint.meta?.music_genre || 'cinematic'
             },
             template_overrides: {
                 audio_ducking: true, // Keep backwards compatible
@@ -559,7 +696,9 @@ async function executeVideoGeneration(chatId, messageId) {
         userStates.delete(chatId);
 
         if (res.ok) {
-            return sendMarkdownV2Text(chatId, escapeMarkdown(`✅ *PRODUKSI DIMULAI!*\nJob ID: \`${result.job_id}\`\n\nMenunggu render selesai.`, '*`'));
+            await sendMarkdownV2Text(chatId, escapeMarkdown(`✅ *PRODUKSI DIMULAI!*\nJob ID: \`${result.job_id}\`\n\nMenunggu render selesai.`, '*`'));
+            // Start background progress polling (fire-and-forget)
+            pollJobProgress(chatId, result.job_id);
         } else {
             throw new Error(result.error || 'Engine Error');
         }
@@ -619,6 +758,10 @@ async function handleYoutubeDownload(chatId, url) {
         const result = await res.json();
 
         if (res.ok) {
+            if (result.status === 'started') {
+                // Background process started, wait for callback
+                return;
+            }
             const caption = `🎬 *${escapeMarkdown(result.title)}*\n\n✅ Berhasil didownload dari YouTube\\!`;
             const videoResult = await sendVideo(chatId, result.url, caption);
 
@@ -638,9 +781,51 @@ async function handleYoutubeDownload(chatId, url) {
     }
 }
 
+/**
+ * Background progress polling — sends stage updates to user
+ */
+async function pollJobProgress(chatId, jobId) {
+    const stageEmojis = {
+        'preparing': '📦 Mempersiapkan workspace\\.\\.\\.',
+        'stock_search': '🔍 Mencari stock footage\\.\\.\\.',
+        'downloading': '⬇️ Mengunduh aset\\.\\.\\.',
+        'tts': '🎤 Membuat voice\\-over\\.\\.\\.',
+        'music': '🎵 Memproses musik\\.\\.\\.',
+        'building_filters': '⚙️ Menyusun filter video\\.\\.\\.',
+        'rendering': '🎬 Merender video \\(bisa 1\\-5 menit\\)\\.\\.\\.',
+        'post_processing': '✨ Post\\-processing\\.\\.\\.',
+    };
+    let lastStage = '';
+    for (let i = 0; i < 240; i++) { // max 20 minutes
+        await new Promise(r => setTimeout(r, 5000));
+        try {
+            const res = await fetch(`${ENGINE_BASE_URL}/jobs/${jobId}`);
+            if (!res.ok) continue;
+            const job = await res.json();
+            const stage = job.progress?.stage || job.status;
+            if (stage && stage !== lastStage && !['done', 'failed', 'cancelled'].includes(stage)) {
+                lastStage = stage;
+                const msg = stageEmojis[stage] || `⏳ ${escapeMarkdown(stage)}`;
+                await sendMarkdownV2Text(chatId, msg);
+            }
+            if (['done', 'failed', 'cancelled'].includes(job.status)) {
+                await deliverJobResult(chatId, jobId, job.result, job.status, job.error);
+                break;
+            }
+        } catch (e) { /* ignore polling errors */ }
+    }
+}
+
 fastify.get('/', async () => ({ status: 'online', service: 'bot-engine-factory' }));
 
 fastify.post(WEBHOOK_PATH, async (request, reply) => {
+    // Security: Validate Telegram webhook secret
+    const headerSecret = request.headers['x-telegram-bot-api-secret-token'];
+    if (SECRET && headerSecret !== SECRET) {
+        console.warn(`⚠️ Unauthorized webhook attempt from ${request.ip}`);
+        return reply.code(403).send({ error: 'Forbidden' });
+    }
+
     try {
         await onUpdate(request.body);
     } catch (err) {
@@ -651,15 +836,27 @@ fastify.post(WEBHOOK_PATH, async (request, reply) => {
 
 fastify.post('/callback', async (request, reply) => {
     const data = request.body;
-    const { id: jobId, status, payload, result, error } = data;
+    const { type, id: jobId, status, payload, result, error, title, url } = data;
     const chatId = payload?.meta?.chat_id || payload?.composition?.meta?.chat_id;
 
     if (!chatId) return reply.code(400).send({ error: 'No chatId' });
 
-    if (status === 'done' && result?.url) {
-        await sendVideo(chatId, result.url, `✅ Video Anda siap! ID: ${jobId}`);
-    } else if (status === 'failed') {
-        await sendMarkdownV2Text(chatId, escapeMarkdown(`❌ *Render Gagal:* ${error || 'Unknown'}`, '*'));
+    if (type === 'youtube_download') {
+        if (status === 'done' && url) {
+            const caption = `🎬 *${escapeMarkdown(title)}*\n\n✅ Berhasil didownload dari YouTube\\!`;
+            const videoResult = await sendVideo(chatId, url, caption);
+            if (!videoResult.ok) {
+                let message = `✅ *Download Selesai\\!*\n\n` +
+                    `🎬 *Judul:* ${escapeMarkdown(title)}\n` +
+                    `📺 [Tonton/Download Video](${escapeMarkdown(url, '()[]')})`;
+                await sendMarkdownV2Text(chatId, message);
+            }
+        } else if (status === 'failed') {
+            await sendMarkdownV2Text(chatId, escapeMarkdown(`❌ *Gagal Download YouTube:* ${error || 'Unknown'}`, '*'));
+        }
+    } else {
+        // Standard video composition callback
+        await deliverJobResult(chatId, jobId, result, status, error);
     }
     return { ok: true };
 });

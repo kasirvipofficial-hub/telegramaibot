@@ -25,6 +25,21 @@ class JobManager extends EventEmitter {
     }
 
     async init() {
+        // Startup: Clean all temp files from previous runs
+        try {
+            const tempDir = config.paths.temp;
+            const entries = await fs.readdir(tempDir);
+            let cleaned = 0;
+            for (const entry of entries) {
+                const fullPath = path.join(tempDir, entry);
+                try {
+                    await fs.rm(fullPath, { recursive: true, force: true });
+                    cleaned++;
+                } catch (e) { /* ignore */ }
+            }
+            if (cleaned > 0) console.log(`🧹 Startup: Cleaned ${cleaned} temp items`);
+        } catch (e) { /* temp dir may not exist yet */ }
+
         // Load persisted jobs from filesystem
         try {
             const files = await fs.readdir(config.paths.jobs);
@@ -50,8 +65,8 @@ class JobManager extends EventEmitter {
         // Resume queued jobs from before restart
         this.processQueue();
 
-        // Schedule periodic temp cleanup for old completed jobs
-        this._cleanupInterval = setInterval(() => this.cleanupOldJobs(), 30 * 60 * 1000); // every 30 min
+        // Schedule periodic cleanup (every 15 min)
+        this._cleanupInterval = setInterval(() => this.cleanupOldJobs(), 15 * 60 * 1000);
     }
 
     async createJob(payload) {
@@ -233,23 +248,53 @@ class JobManager extends EventEmitter {
     }
 
     async cleanupOldJobs() {
-        // Remove job JSON files older than 24 hours and in terminal state
         const now = Date.now();
-        const maxAge = 24 * 60 * 60 * 1000; // 24h
 
+        // Check disk usage of temp directory
+        let tempSizeMB = 0;
+        try {
+            tempSizeMB = await this.getDirSizeMB(config.paths.temp);
+        } catch (e) { /* ignore */ }
+
+        // Adaptive threshold: 24h normally, 6h if disk critical (>2GB)
+        const maxAge = tempSizeMB > 2048 ? 6 * 60 * 60 * 1000 : 24 * 60 * 60 * 1000;
+
+        if (tempSizeMB > 1024) {
+            console.warn(`⚠️ Temp disk usage: ${tempSizeMB.toFixed(0)}MB (threshold: ${maxAge / 3600000}h)`);
+        }
+
+        let cleaned = 0;
         for (const [id, job] of this.jobs) {
             if (['done', 'failed', 'cancelled'].includes(job.status)) {
                 const age = now - new Date(job.updated_at || job.created_at).getTime();
                 if (age > maxAge) {
                     this.jobs.delete(id);
+                    cleaned++;
                     try {
                         await fs.unlink(path.join(config.paths.jobs, `${id}.json`));
-                        // Also cleanup the temp/work dir now that history is being purged
                         await this.cleanupJob(id);
                     } catch (e) { /* ignore */ }
                 }
             }
         }
+        if (cleaned > 0) console.log(`🧹 Cleaned ${cleaned} old jobs (temp: ${tempSizeMB.toFixed(0)}MB)`);
+    }
+
+    async getDirSizeMB(dirPath) {
+        let totalBytes = 0;
+        try {
+            const entries = await fs.readdir(dirPath, { withFileTypes: true });
+            for (const entry of entries) {
+                const fullPath = path.join(dirPath, entry.name);
+                if (entry.isDirectory()) {
+                    totalBytes += await this.getDirSizeMB(fullPath) * 1024 * 1024;
+                } else {
+                    const stat = await fs.stat(fullPath);
+                    totalBytes += stat.size;
+                }
+            }
+        } catch (e) { /* ignore errors */ }
+        return totalBytes / (1024 * 1024);
     }
 
     async sendWebhookWithRetry(url, job) {

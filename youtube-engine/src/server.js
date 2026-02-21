@@ -53,30 +53,57 @@ fastify.post('/download', async (request, reply) => {
         const userFolder = chat_id ? `users/${chat_id}` : 'users/guest';
         const r2Key = `${userFolder}/youtube/${fileName}`;
 
-        // 3. Download to RAM Buffer
-        request.log.info(`Downloading to RAM buffer...`);
-        const ramPath = await youtubeService.downloadVideo(url, fileName);
-
-        // 4. Upload to R2
-        request.log.info(`Uploading from RAM to R2 key: ${r2Key}...`);
-        const publicUrl = await storageService.uploadFile(ramPath, r2Key);
-
-        // 5. Cleanup RAM Buffer
-        if (fs.existsSync(ramPath)) {
-            await fs.promises.unlink(ramPath);
-            request.log.info(`Purged RAM buffer: ${ramPath}`);
-        }
-
-        return {
-            status: 'done',
+        // Return immediately to avoid timeout
+        reply.send({
+            status: 'started',
             id: info.videoId,
-            title: info.title,
-            duration: info.duration,
-            url: publicUrl,
-            thumbnail: info.thumbnail
-        };
+            title: info.title
+        });
+
+        // 3. Process in background
+        (async () => {
+            try {
+                request.log.info(`[Background] Initializing direct stream from yt-dlp...`);
+                const stream = youtubeService.downloadStream(url);
+
+                request.log.info(`[Background] Streaming directly to R2 key: ${r2Key}...`);
+                const publicUrl = await storageService.uploadStream(stream, r2Key, 'video/mp4');
+
+                // 4. Send callback to bot
+                const botCallbackUrl = process.env.BOT_CALLBACK_URL || 'http://localhost:3001/callback';
+
+                request.log.info(`[Background] Sending success callback to ${botCallbackUrl}`);
+                await fetch(botCallbackUrl, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        type: 'youtube_download',
+                        id: info.videoId,
+                        status: 'done',
+                        title: info.title,
+                        url: publicUrl,
+                        payload: { meta: { chat_id } }
+                    })
+                });
+            } catch (bgErr) {
+                request.log.error(`[Background] YouTube Process Error: ${bgErr.message}`);
+                const botCallbackUrl = process.env.BOT_CALLBACK_URL || 'http://localhost:3001/callback';
+                await fetch(botCallbackUrl, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        type: 'youtube_download',
+                        id: info.videoId,
+                        status: 'failed',
+                        error: bgErr.message,
+                        payload: { meta: { chat_id } }
+                    })
+                }).catch(() => { });
+            }
+        })();
+
     } catch (err) {
-        request.log.error(`YouTube Process Error: ${err.message}`);
+        request.log.error(`YouTube Initial Error: ${err.message}`);
         return reply.code(500).send({
             status: 'failed',
             error: err.message

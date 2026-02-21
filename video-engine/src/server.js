@@ -8,9 +8,16 @@ import authMiddleware from './middleware/auth.js';
 import jobManager from './core/job-manager.js';
 import jobsRoutes from './api/jobs.js';
 import voiceRoutes from './api/voice.js';
+import logger from './utils/logger.js';
 
 const fastify = Fastify({
-    logger: true,
+    logger: {
+        level: process.env.LOG_LEVEL || 'info',
+        ...(process.env.NODE_ENV !== 'production' ? {
+            transport: { target: 'pino-pretty' }
+        } : {})
+    },
+    genReqId: () => `req-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
     bodyLimit: 1048576 // 1MB max body size
 });
 

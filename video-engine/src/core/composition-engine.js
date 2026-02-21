@@ -213,17 +213,55 @@ export default {
         }
         let musicFile = null;
         if (composition.music) {
-            onProgress({ stage: 'music', message: 'Processing background music' });
-            musicFile = path.join(workDir, 'music.mp3');
-            console.log(`Job ${job.id}: Processing music...`);
+            // Auto-search music if query provided without URL
+            if (typeof composition.music === 'object' && composition.music.query && !composition.music.url) {
+                try {
+                    onProgress({ stage: 'music', message: `Searching music: ${composition.music.query}` });
+                    console.log(`Job ${job.id}: Searching music for "${composition.music.query}"...`);
+                    const musicResult = await StockSearch.searchMusic(composition.music.query);
+                    composition.music.url = musicResult.url;
+                    console.log(`Job ${job.id}: Found music (${musicResult.duration}s) from ${musicResult.provider}`);
+                } catch (e) {
+                    console.warn(`Job ${job.id}: Music search failed: ${e.message}, continuing without music`);
+                    composition.music = null;
+                }
+            }
 
-            const musicSrc = typeof composition.music === 'string' ? composition.music : composition.music.url;
+            if (composition.music) {
+                onProgress({ stage: 'music', message: 'Processing background music' });
+                musicFile = path.join(workDir, 'music.mp3');
+                const musicRaw = path.join(workDir, 'music_raw.mp4');
+                console.log(`Job ${job.id}: Processing music...`);
 
-            if (musicSrc.startsWith('http')) {
-                await downloadFile(musicSrc, musicFile);
-            } else {
-                await fs.access(musicSrc).catch(() => { throw new Error(`Music not found: ${musicSrc}`); });
-                await fs.copyFile(musicSrc, musicFile);
+                const musicSrc = typeof composition.music === 'string' ? composition.music : composition.music.url;
+
+                if (musicSrc && musicSrc.startsWith('http')) {
+                    await downloadFile(musicSrc, musicRaw);
+                } else if (musicSrc) {
+                    await fs.access(musicSrc).catch(() => { throw new Error(`Music not found: ${musicSrc}`); });
+                    await fs.copyFile(musicSrc, musicRaw);
+                } else {
+                    console.warn(`Job ${job.id}: Music source is empty, skipping`);
+                    musicFile = null;
+                }
+
+                // Extract audio from music source (may be a video file from Pixabay)
+                if (musicFile) {
+                    try {
+                        const probe = await probeFile(musicRaw);
+                        const hasAudio = probe.streams?.some(s => s.codec_type === 'audio');
+                        if (!hasAudio) {
+                            console.warn(`Job ${job.id}: Music file has no audio stream, skipping`);
+                            musicFile = null;
+                        } else {
+                            await runFFmpeg(['-y', '-i', musicRaw, '-vn', '-acodec', 'aac', '-b:a', '192k', musicFile], workDir);
+                            console.log(`Job ${job.id}: Audio extracted from music source`);
+                        }
+                    } catch (e) {
+                        console.warn(`Job ${job.id}: Music audio extraction failed: ${e.message}, skipping`);
+                        musicFile = null;
+                    }
+                }
             }
         }
 
@@ -586,6 +624,27 @@ export default {
         onProgress({ stage: 'rendering', quality: isDraft ? 'draft' : 'full', resolution: `${w}x${h}` });
         console.log(`Job ${job.id}: Rendering (${isDraft ? 'draft' : 'full'} quality, ${w}x${h})...`);
         await runFFmpeg(args, workDir);
+
+        // === Output Validation ===
+        try {
+            const stat = await fs.stat(outputFile);
+            if (stat.size < 10240) { // < 10KB is likely corrupt
+                throw new Error(`Output file too small (${stat.size} bytes), likely corrupt`);
+            }
+            const probe = await probeFile(outputFile);
+            const videoStream = probe.streams?.find(s => s.codec_type === 'video');
+            if (!videoStream) {
+                throw new Error('Output file has no video stream');
+            }
+            const duration = parseFloat(probe.format?.duration || '0');
+            if (duration < 0.5) {
+                throw new Error(`Output video too short (${duration}s)`);
+            }
+            console.log(`Job ${job.id}: ✅ Output validated (${(stat.size / 1024 / 1024).toFixed(1)}MB, ${duration.toFixed(1)}s)`);
+        } catch (valErr) {
+            throw new Error(`Output validation failed: ${valErr.message}`);
+        }
+
         onProgress({ stage: 'post_processing', message: 'Generating thumbnail' });
 
         // 12. Thumbnail

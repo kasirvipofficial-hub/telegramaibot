@@ -7,33 +7,23 @@ import { fileURLToPath } from 'url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const execAsync = promisify(exec);
 
-const YT_DLP_PATH = '/usr/local/bin/yt-dlp-new';
+const YT_DLP_PATH = 'yt-dlp';
 const COOKIES_PATH = path.resolve(__dirname, '../../cookies.txt');
-const RAM_TEMP_DIR = '/dev/shm/youtube-engine';
-
-// Ensure RAM temp dir exists
-if (!fs.existsSync(RAM_TEMP_DIR)) {
-    try {
-        fs.mkdirSync(RAM_TEMP_DIR, { recursive: true });
-    } catch (e) {
-        console.warn('Could not create /dev/shm/youtube-engine, falling back to local temp');
-    }
-}
 
 class YoutubeService {
     getCommonArgs() {
-        let args = '';
+        let args = [];
         if (fs.existsSync(COOKIES_PATH)) {
-            args += ` --cookies "${COOKIES_PATH}"`;
+            args.push('--cookies', COOKIES_PATH);
         }
-        args += ` --js-runtimes node`;
+        args.push('--js-runtimes', 'node');
         return args;
     }
 
     async getInfo(url) {
         try {
-            const commonArgs = this.getCommonArgs();
-            const { stdout } = await execAsync(`${YT_DLP_PATH}${commonArgs} --dump-json "${url}"`);
+            const args = [...this.getCommonArgs(), '--dump-json', url];
+            const { stdout } = await execAsync(`"${YT_DLP_PATH}" ${args.join(' ')}`);
             const info = JSON.parse(stdout);
 
             return {
@@ -52,21 +42,25 @@ class YoutubeService {
         }
     }
 
-    async downloadVideo(url, fileName) {
-        try {
-            const outputPath = path.join(fs.existsSync(RAM_TEMP_DIR) ? RAM_TEMP_DIR : '/tmp', fileName);
-            const commonArgs = this.getCommonArgs();
+    /**
+     * returns a Readable stream of the video content
+     */
+    downloadStream(url) {
+        const args = [
+            ...this.getCommonArgs(),
+            '-f', 'best[ext=mp4]/best',
+            '-o', '-',
+            url
+        ];
 
-            // Download best quality video + audio together
-            const cmd = `${YT_DLP_PATH}${commonArgs} -f "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best" -o "${outputPath}" "${url}"`;
-            console.log(`Executing: ${cmd}`);
-            await execAsync(cmd);
+        console.log(`Spawning: ${YT_DLP_PATH} ${args.join(' ')}`);
+        const process = spawn(YT_DLP_PATH, args);
 
-            return outputPath;
-        } catch (err) {
-            console.error('Youtube Download Error:', err.message);
-            throw new Error(`Gagal mendownload YouTube: ${err.message}`);
-        }
+        process.stderr.on('data', (data) => {
+            console.error(`[yt-dlp] ${data.toString()}`);
+        });
+
+        return process.stdout;
     }
 }
 
