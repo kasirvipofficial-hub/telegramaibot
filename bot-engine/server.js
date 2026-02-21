@@ -613,7 +613,7 @@ async function handleYoutubeDownload(chatId, url) {
         const res = await fetch(`${YOUTUBE_ENGINE_URL}/download`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ url })
+            body: JSON.stringify({ url, chat_id: chatId })
         });
 
         const result = await res.json();

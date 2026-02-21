@@ -181,11 +181,14 @@ class JobManager extends EventEmitter {
 
             // Upload to S3 if configured
             if (process.env.S3_BUCKET) {
+                const chatId = job.payload.meta?.chat_id || job.payload.composition?.meta?.chat_id || 'guest';
+                const userFolder = `users/${chatId}`;
+
                 // Upload main output
                 if (result.outputFile) {
                     try {
-                        const key = `jobs/${job.id}/${path.basename(result.outputFile)}`;
-                        console.log(`Job ${job.id}: Uploading result to S3...`);
+                        const key = `${userFolder}/jobs/${job.id}/${path.basename(result.outputFile)}`;
+                        console.log(`Job ${job.id}: Uploading result to S3 for user ${chatId}...`);
                         result.url = await uploadService.uploadFile(result.outputFile, key);
                     } catch (uploadErr) {
                         console.error(`Job ${job.id}: Video upload failed`, uploadErr.message);
@@ -195,8 +198,8 @@ class JobManager extends EventEmitter {
                 // Upload thumbnail
                 if (result.thumbnailFile) {
                     try {
-                        const thumbKey = `jobs/${job.id}/${path.basename(result.thumbnailFile)}`;
-                        console.log(`Job ${job.id}: Uploading thumbnail to S3...`);
+                        const thumbKey = `${userFolder}/jobs/${job.id}/${path.basename(result.thumbnailFile)}`;
+                        console.log(`Job ${job.id}: Uploading thumbnail to S3 for user ${chatId}...`);
                         result.thumbnailUrl = await uploadService.uploadFile(result.thumbnailFile, thumbKey);
                     } catch (thumbErr) {
                         console.error(`Job ${job.id}: Thumbnail upload failed`, thumbErr.message);

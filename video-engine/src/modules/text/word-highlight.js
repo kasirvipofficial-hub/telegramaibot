@@ -98,15 +98,33 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\
      * @param {Object} kieResult - Raw Kie.ai recordInfo response with resultJson containing timestamps
      * @returns {Array<{word: string, start: number, end: number}>}
      */
+    /**
+     * Parse Kie.ai timestamps with fallback to estimation
+     * 
+     * @param {Object} resultJson - { timestamps, text }
+     * @returns {Array<{word: string, start: number, end: number}>}
+     */
     parseKieTimestamps(resultJson) {
-        if (!resultJson.timestamps) return [];
+        if (resultJson.timestamps && Array.isArray(resultJson.timestamps) && resultJson.timestamps.length > 0) {
+            return resultJson.timestamps.map(ts => ({
+                word: ts.word || ts.text,
+                start: ts.start_time ?? ts.start ?? 0,
+                end: ts.end_time ?? ts.end ?? 0
+            }));
+        }
 
-        // Kie.ai timestamps format: array of { word, start_time, end_time }
-        // Times are in seconds
-        return resultJson.timestamps.map(ts => ({
-            word: ts.word || ts.text,
-            start: ts.start_time ?? ts.start,
-            end: ts.end_time ?? ts.end
+        // FALLBACK: Estimate timestamps based on text and duration
+        if (!resultJson.text) return [];
+
+        const words = resultJson.text.split(/\s+/).filter(w => w.length > 0);
+        if (words.length === 0) return [];
+
+        // Estimate based on 2.2 words per second (average speaking rate)
+        const wordDuration = 0.45; // 1/2.2
+        return words.map((word, i) => ({
+            word: word,
+            start: i * wordDuration,
+            end: (i + 1) * wordDuration
         }));
     },
 

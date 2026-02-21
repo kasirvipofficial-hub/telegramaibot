@@ -34,14 +34,14 @@ fastify.get('/', async () => {
  * Payload: { url: string, filename?: string }
  */
 fastify.post('/download', async (request, reply) => {
-    const { url, filename } = request.body;
+    const { url, filename, chat_id } = request.body;
 
     if (!url) {
         return reply.code(400).send({ error: 'Missing YouTube URL' });
     }
 
     try {
-        request.log.info(`Processing YouTube download: ${url}`);
+        request.log.info(`Processing YouTube download for user ${chat_id || 'guest'}: ${url}`);
 
         // 1. Get video info
         const info = await youtubeService.getInfo(url);
@@ -50,7 +50,8 @@ fastify.post('/download', async (request, reply) => {
         // 2. Prepare Final Key
         const safeTitle = info.title.replace(/[^\w\s-]/gi, '').replace(/\s+/g, '_');
         const fileName = filename || `yt_${info.videoId}_${safeTitle}.mp4`;
-        const r2Key = `youtube/${fileName}`;
+        const userFolder = chat_id ? `users/${chat_id}` : 'users/guest';
+        const r2Key = `${userFolder}/youtube/${fileName}`;
 
         // 3. Download to RAM Buffer
         request.log.info(`Downloading to RAM buffer...`);
