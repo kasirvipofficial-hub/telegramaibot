@@ -12,6 +12,7 @@ const TOKEN = process.env.ENV_BOT_TOKEN;
 const WEBHOOK_PATH = '/endpoint';
 const SECRET = process.env.ENV_BOT_SECRET;
 const ENGINE_BASE_URL = (process.env.ENV_ENGINE_URL || 'http://localhost:3000').replace(/\/$/, '');
+const YOUTUBE_ENGINE_URL = 'http://localhost:3002';
 
 // LLM Configuration
 const openai = new OpenAI({
@@ -211,6 +212,7 @@ async function onMessage(message) {
         return sendMarkdownV2Text(chatId, '*🌟 AI Video Factory Portal*\n' +
             escapeMarkdown(
                 '/factory - Mulai proses Factory Workflow\n' +
+                '/yt [link] - Download video dari YouTube\n' +
                 '/status [id] - Cek status render\n' +
                 '/cancel - Batalkan sesi aktif',
                 '`'));
@@ -228,8 +230,14 @@ async function onMessage(message) {
 
     if (text.startsWith('/status')) {
         const jobId = text.replace('/status', '').trim();
-        if (!jobId) return sendMarkdownV2Text(chatId, 'Silakan masukkan ID job.');
+        if (!jobId) return sendMarkdownV2Text(chatId, 'Silakan masukkan ID job\\.');
         return checkJobStatus(chatId, jobId);
+    }
+
+    if (text.startsWith('/yt')) {
+        const url = text.replace('/yt', '').trim();
+        if (!url) return sendMarkdownV2Text(chatId, 'Silakan masukkan link YouTube\\. Contoh: `/yt https://youtu.be/xxx`');
+        return handleYoutubeDownload(chatId, url);
     }
 
     if (state) {
@@ -250,7 +258,7 @@ async function onMessage(message) {
  */
 
 async function askPurpose(chatId, editMessageId = null) {
-    const message = '🎯 *1. Pilih Tujuan Utama Video (Purpose):*';
+    const message = escapeMarkdown('🎯 *1. Pilih Tujuan Utama Video (Purpose):*', '*');
     const keyboard = {
         inline_keyboard: [
             [{ text: '🛒 Affiliate / Jualan', callback_data: 'pur_affiliate' }],
@@ -265,7 +273,7 @@ async function askPurpose(chatId, editMessageId = null) {
 }
 
 async function askPlatform(chatId, messageId) {
-    const message = '📱 *2. Pilih Platform Target:*';
+    const message = escapeMarkdown('📱 *2. Pilih Platform Target:*', '*');
     const keyboard = {
         inline_keyboard: [
             [{ text: '🎵 TikTok', callback_data: 'plat_tiktok' }],
@@ -278,7 +286,8 @@ async function askPlatform(chatId, messageId) {
 }
 
 async function askDuration(chatId, messageId, platform) {
-    const message = `⏳ *3. Pilih Durasi Ideal untuk ${platform}:*\n(_Berdasarkan safe duration platform_)`;
+    const message = escapeMarkdown(`⏳ *3. Pilih Durasi Ideal untuk ${platform}:*`, '*') + '\n' +
+        escapeMarkdown('(_Berdasarkan safe duration platform_)', '_');
     const safeDurations = PLATFORMS[platform].safe_duration;
 
     // Group buttons into rows of 2
@@ -297,7 +306,7 @@ async function askDuration(chatId, messageId, platform) {
 }
 
 async function askEmotion(chatId, messageId) {
-    const message = '🎭 *4. Pilih Emosi / Vibe Video:*';
+    const message = escapeMarkdown('🎭 *4. Pilih Emosi / Vibe Video:*', '*');
     const keyboard = {
         inline_keyboard: [
             [{ text: '😊 Happy / Positif', callback_data: 'emo_happy' }, { text: '😌 Calm / Santai', callback_data: 'emo_calm' }],
@@ -309,7 +318,7 @@ async function askEmotion(chatId, messageId) {
 }
 
 async function askMusic(chatId, messageId) {
-    const message = '🎵 *5. Pilih Genre Musik:*';
+    const message = escapeMarkdown('🎵 *5. Pilih Genre Musik:*', '*');
     const keyboard = {
         inline_keyboard: [
             [{ text: '🎻 Cinematic', callback_data: 'mus_cinematic' }, { text: '☕ Lo-fi', callback_data: 'mus_lofi' }],
@@ -321,7 +330,7 @@ async function askMusic(chatId, messageId) {
 }
 
 async function askStyle(chatId, messageId) {
-    const message = '🎨 *6. Pilih Gaya Visual:*';
+    const message = escapeMarkdown('🎨 *6. Pilih Gaya Visual:*', '*');
     const keyboard = {
         inline_keyboard: [
             [{ text: '✨ Aesthetic Vlog', callback_data: 'sty_aesthetic' }],
@@ -334,7 +343,7 @@ async function askStyle(chatId, messageId) {
 }
 
 async function askVoice(chatId, messageId) {
-    const message = '🎤 *7. Pilih Karakter Suara Narator:*';
+    const message = escapeMarkdown('🎤 *7. Pilih Karakter Suara Narator:*', '*');
     const keyboard = {
         inline_keyboard: [
             [{ text: '👨 Ardi (Lembut & Hangat)', callback_data: 'vox_ardi' }],
@@ -348,7 +357,8 @@ async function askVoice(chatId, messageId) {
 }
 
 async function askTopic(chatId, messageId) {
-    const message = '📝 *8. Masukkan Topik atau Brief Anda*\n\nSilakan ketik brief spesifik atau topik video ini. \nContoh: _"Cara sukses jualan di usia 20-an walau tanpa modal"_';
+    const message = escapeMarkdown('📝 *8. Masukkan Topik atau Brief Anda*', '*') + '\n\n' +
+        escapeMarkdown('Silakan ketik brief spesifik atau topik video ini. \nContoh: _"Cara sukses jualan di usia 20-an walau tanpa modal"_', '_');
     userStates.get(chatId).state = 'INPUT_TOPIC';
     return editMessageText(chatId, messageId, message);
 }
@@ -414,7 +424,7 @@ async function onCallbackQuery(query) {
 }
 
 async function handleTopicInput(chatId, data, instruction = null) {
-    await sendMarkdownV2Text(chatId, '⚙️ *AI Factory sedang memproduksi Skrip & Blueprint...* Mohon tunggu.');
+    await sendMarkdownV2Text(chatId, '⚙️ *AI Factory sedang memproduksi Skrip & Blueprint\\.\\.\\.* Mohon tunggu\\.');
 
     try {
         const blueprint = await brainstormWithAI(data);
@@ -468,7 +478,7 @@ async function executeVideoGeneration(chatId, messageId) {
     const state = userStates.get(chatId);
     const { ai_blueprint, voice_choice, platform } = state.data;
 
-    await editMessageText(chatId, messageId, '⚙️ *Merakit Composition Final...* Transmitting ke Video Engine\\.');
+    await editMessageText(chatId, messageId, '⚙️ *Merakit Composition Final\\.\\.\\.* Transmitting ke Video Engine\\.');
 
     // Voice mapping for HF
     const voiceMapping = {
@@ -560,25 +570,71 @@ async function executeVideoGeneration(chatId, messageId) {
 
 async function checkJobStatus(chatId, jobId) {
     try {
+        console.log(`[Status] Checking status for Job ID: ${jobId}`);
         const res = await fetch(`${ENGINE_BASE_URL}/jobs/${jobId}`);
         const result = await res.json();
+
+        console.log(`[Status] Engine response for ${jobId}:`, JSON.stringify(result).substring(0, 200));
+
         if (res.ok) {
-            let message = `📊 *Status Job:* \`${result.status}\`\n`;
+            let message = `📊 *Status Job:* \`${result.status || 'unknown'}\`\n`;
+
             if (result.progress) {
                 const progressText = typeof result.progress === 'object'
                     ? (result.progress.message || result.progress.stage || 'Processing')
                     : `${result.progress}%`;
                 message += `⏳ Progress: \`${progressText}\`\n`;
             }
-            if (result.status === 'done' && result.result?.url) {
-                message += `🎬 [Tonton Video](${result.result.url})`;
+
+            if (result.status === 'done' && result.result && result.result.url) {
+                message += `🎬 [Tonton Video](${escapeMarkdown(result.result.url, '()[]')})`;
+            } else if (result.status === 'failed') {
+                message += `❌ *Error:* ${escapeMarkdown(result.error || 'Unknown error')}`;
+            } else {
+                message += `\n_Silakan cek kembali beberapa saat lagi\\._`;
             }
-            await sendMarkdownV2Text(chatId, escapeMarkdown(message, '*`[]()'));
+
+            await sendMarkdownV2Text(chatId, message);
         } else {
-            throw new Error(result.error);
+            console.error(`[Status] Engine error ${res.status}:`, result);
+            throw new Error(result.error || `Engine returned ${res.status}`);
         }
     } catch (err) {
+        console.error(`[Status] Bot-side error:`, err);
         await sendMarkdownV2Text(chatId, escapeMarkdown(`❌ *Error:* ${err.message}`, '*'));
+    }
+}
+
+async function handleYoutubeDownload(chatId, url) {
+    try {
+        console.log(`[YouTube] Requesting download for: ${url}`);
+        await sendMarkdownV2Text(chatId, '🚀 *Sedang memproses link YouTube\\.\\.\\.* Mohon tunggu, video sedang dialirkan ke R2\\.');
+
+        const res = await fetch(`${YOUTUBE_ENGINE_URL}/download`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ url })
+        });
+
+        const result = await res.json();
+
+        if (res.ok) {
+            const caption = `🎬 *${escapeMarkdown(result.title)}*\n\n✅ Berhasil didownload dari YouTube\\!`;
+            const videoResult = await sendVideo(chatId, result.url, caption);
+
+            if (!videoResult.ok) {
+                // Fallback to link if internal telegram upload fails
+                let message = `✅ *Download Selesai\\!*\n\n` +
+                    `🎬 *Judul:* ${escapeMarkdown(result.title)}\n` +
+                    `📺 [Tonton/Download Video](${escapeMarkdown(result.url, '()[]')})`;
+                await sendMarkdownV2Text(chatId, message);
+            }
+        } else {
+            throw new Error(result.error || 'Terjadi kesalahan pada engine YouTube');
+        }
+    } catch (err) {
+        console.error(`[YouTube] Error:`, err.message);
+        await sendMarkdownV2Text(chatId, escapeMarkdown(`❌ *Gagal Download YouTube:* ${err.message}`, '*'));
     }
 }
 
