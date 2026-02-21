@@ -1,7 +1,8 @@
 
 import fs from 'fs/promises';
 import path from 'path';
-import { v4 as uuidv4 } from 'uuid';
+import pkg from 'uuid';
+const { v4: uuidv4 } = pkg;
 import { EventEmitter } from 'events';
 import config from '../../config/default.js';
 import assemblyEngine from './assembly-engine.js';

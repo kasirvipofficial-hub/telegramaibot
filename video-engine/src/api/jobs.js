@@ -28,10 +28,15 @@ export default async function (fastify, opts) {
                 return reply.code(400).send({ error: 'Missing "composition" object for composition mode.' });
             }
 
+            // Blueprint 5 nested properties validation
+            if (comp.audio && comp.audio.voice && typeof comp.audio.voice.duck_music !== 'boolean') {
+                return reply.code(400).send({ error: 'audio.voice.duck_music must be boolean.' })
+            }
+
             // Validate clips
             if (comp.clips && Array.isArray(comp.clips)) {
-                if (comp.clips.length === 0 || comp.clips.length > 20) {
-                    return reply.code(400).send({ error: 'clips must have 1-20 items.' });
+                if (comp.clips.length === 0 || comp.clips.length > 50) { // Increased for scene based clips
+                    return reply.code(400).send({ error: 'clips must have 1-50 items.' });
                 }
                 for (const clip of comp.clips) {
                     // Each clip needs either url or query

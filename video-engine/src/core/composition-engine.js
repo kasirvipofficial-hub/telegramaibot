@@ -241,18 +241,22 @@ export default {
         // 5. Generate Subtitles (ASS)
         let assFile = null;
 
-        // Option A: Per-word highlight subtitles (CapCut-style)
-        if (composition.voice_over && typeof composition.voice_over === 'object' && composition.voice_over.word_highlight && job._wordTimestamps) {
+        // Ensure backward compatibility plus blueprint 5 rules mapping
+        const useAssHighlight = (composition.text && composition.text.subtitle_engine === 'ass') ||
+            (composition.voice_over && typeof composition.voice_over === 'object' && composition.voice_over.word_highlight);
+
+        // Option A: Per-word highlight subtitles (CapCut-style) / ASS Engine from Blueprint
+        if (useAssHighlight && job._wordTimestamps) {
             assFile = path.join(workDir, 'subs.ass');
             const wordTimings = WordHighlight.parseKieTimestamps({ timestamps: job._wordTimestamps });
             if (wordTimings.length > 0) {
                 const assContent = WordHighlight.generate(wordTimings, {
                     resolution: template.resolution,
-                    highlightColor: composition.voice_over.highlight_color || '&H0000FFFF',
-                    normalColor: composition.voice_over.normal_color || '&H00FFFFFF',
-                    fontName: composition.voice_over.font || 'Arial',
-                    fontSize: composition.voice_over.font_size || 72,
-                    wordsPerLine: composition.voice_over.words_per_line || 4
+                    highlightColor: (composition.text && composition.text.highlight_color) || (composition.voice_over && composition.voice_over.highlight_color) || '&H0000FFFF',
+                    normalColor: (composition.text && composition.text.normal_color) || (composition.voice_over && composition.voice_over.normal_color) || '&H00FFFFFF',
+                    fontName: (composition.text && composition.text.font) || (composition.voice_over && composition.voice_over.font) || 'Arial',
+                    fontSize: (composition.text && composition.text.font_size) || (composition.voice_over && composition.voice_over.font_size) || 72,
+                    wordsPerLine: (composition.text && composition.text.words_per_line) || (composition.voice_over && composition.voice_over.words_per_line) || 4
                 });
                 await fs.writeFile(assFile, assContent);
                 console.log(`Job ${job.id}: Per-word highlight subtitles generated (${wordTimings.length} words)`);
@@ -502,7 +506,11 @@ export default {
             streamIndex++;
 
             const musicVol = template.music_volume ?? 0.15;
-            const isDucking = composition.audio_ducking ?? template.audio_ducking ?? false;
+            // new hierarchy support: composition.audio.voice.duck_music or fallback to old
+            const isDucking = (composition.audio && composition.audio.voice && composition.audio.voice.duck_music !== undefined) ?
+                composition.audio.voice.duck_music :
+                (composition.audio_ducking ?? template.audio_ducking ?? false);
+
             if (isDucking && voStream) {
                 filterComplex.push(`${voStream}asplit=2[vo_main][vo_sc]`);
                 voStream = '[vo_main]';
