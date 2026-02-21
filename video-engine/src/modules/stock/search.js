@@ -130,16 +130,52 @@ export default {
     },
 
     /**
-     * Search for background music using Pixabay videos
-     * FFmpeg extracts the audio track from the video result
+     * Search for background music
+     * Primary: Deezer (30s high quality previews)
+     * Fallback: Pixabay (Ambient videos)
      * @param {string} query - Music genre or mood keyword
-     * @returns {Promise<{url: string, duration: number, provider: string}>}
+     * @returns {Promise<{url: string, duration: number, provider: string, title?: string, artist?: string}>}
      */
     async searchMusic(query) {
-        const apiKey = process.env.PIXABAY_API_KEY;
-        if (!apiKey) throw new Error('PIXABAY_API_KEY not configured for music search');
+        try {
+            return await this.searchDeezer(query);
+        } catch (e) {
+            console.warn(`[Stock] Deezer search failed: ${e.message}, falling back to Pixabay`);
+            return await this.searchPixabayMusic(query);
+        }
+    },
 
-        // Search for short ambient/background clips with audio
+    /**
+     * Internal: Search Deezer for music tracks (prodives 30s previews)
+     */
+    async searchDeezer(query) {
+        console.log(`[Stock] Deezer search: "${query}"`);
+        const res = await fetch(`https://api.deezer.com/search/track?q=${encodeURIComponent(query)}&limit=15`);
+        if (!res.ok) throw new Error(`Deezer API HTTP ${res.status}`);
+        const data = await res.json();
+
+        if (!data.data || data.data.length === 0) {
+            throw new Error(`No tracks found on Deezer for "${query}"`);
+        }
+
+        const track = data.data[Math.floor(Math.random() * data.data.length)];
+
+        return {
+            url: track.preview,
+            duration: 30, // Deezer previews are always 30s
+            provider: 'deezer',
+            title: track.title,
+            artist: track.artist?.name || 'Unknown Artist'
+        };
+    },
+
+    /**
+     * Internal: Search Pixabay for music (legacy/fallback)
+     */
+    async searchPixabayMusic(query) {
+        const apiKey = process.env.PIXABAY_API_KEY;
+        if (!apiKey) throw new Error('PIXABAY_API_KEY not configured');
+
         const musicQuery = `${query} background abstract`;
         const params = new URLSearchParams({
             key: apiKey,
@@ -148,20 +184,15 @@ export default {
             per_page: '15',
         });
 
-        console.log(`[Stock] Pixabay music search: "${musicQuery}"`);
+        console.log(`[Stock] Pixabay fallback search: "${musicQuery}"`);
         const res = await fetch(`${PIXABAY_BASE}?${params}`);
-        if (!res.ok) throw new Error(`Pixabay Music HTTP ${res.status}`);
+        if (!res.ok) throw new Error(`Pixabay HTTP ${res.status}`);
         const data = await res.json();
 
-        if (!data.hits || data.hits.length === 0) {
-            throw new Error(`No music found for "${query}"`);
-        }
+        if (!data.hits || data.hits.length === 0) throw new Error(`No music on Pixabay for "${query}"`);
 
-        // Prefer clips between 10-60 seconds
-        let hits = data.hits.filter(h => h.duration >= 10 && h.duration <= 60);
-        if (hits.length === 0) hits = data.hits;
-
-        const hit = hits[Math.floor(Math.random() * hits.length)];
+        const hits = data.hits.filter(h => h.duration >= 10 && h.duration <= 120);
+        const hit = (hits.length > 0 ? hits : data.hits)[Math.floor(Math.random() * (hits.length || data.hits.length))];
         const videoData = hit.videos.medium || hit.videos.large || hit.videos.small;
 
         return {

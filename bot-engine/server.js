@@ -232,6 +232,33 @@ function escapeMarkdown(text, except = '') {
 }
 
 /**
+ * MUSIC SEARCH (Deezer API)
+ */
+async function findMusicDeezer(genre) {
+    console.log(`[Music] Searching Deezer for: ${genre}`);
+    try {
+        const query = encodeURIComponent(genre);
+        const res = await fetch(`https://api.deezer.com/search/track?q=${query}&limit=10`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+
+        if (!data.data || data.data.length === 0) return null;
+
+        // Pick random track from top results
+        const track = data.data[Math.floor(Math.random() * data.data.length)];
+
+        return {
+            url: track.preview,
+            title: track.title,
+            artist: track.artist?.name || 'Unknown'
+        };
+    } catch (err) {
+        console.error('[Music] Deezer Error:', err.message);
+        return null;
+    }
+}
+
+/**
  * AI BRAINSTORMING LOGIC
  */
 async function brainstormWithAI(data) {
@@ -292,8 +319,10 @@ Output Structure:
 `;
 
     try {
+        const model = process.env.LLM_MODEL || "gpt-4o";
+        console.log(`🤖 Using LLM Model: ${model}`);
         const completion = await openai.chat.completions.create({
-            model: "gpt-4o", // use 4o for better strict adherence
+            model: model,
             messages: [{ role: "user", content: prompt }],
             response_format: { type: "json_object" }
         });
@@ -557,6 +586,11 @@ async function handleTopicInput(chatId, data, instruction = null) {
 
     try {
         const blueprint = await brainstormWithAI(data);
+
+        // Auto-search music based on blueprint music plan
+        const mGenre = blueprint.music_plan?.genre || data.music_genre || 'cinematic';
+        blueprint.music_track = await findMusicDeezer(mGenre);
+
         console.log(`📝 Constructing preview message for ${chatId}`);
         userStates.set(chatId, {
             state: 'REVIEWING_BLUEPRINT',
@@ -575,7 +609,9 @@ async function handleTopicInput(chatId, data, instruction = null) {
         }
 
         let visualCount = blueprint.visual_plan ? blueprint.visual_plan.length : 0;
-        let musicBpm = blueprint.music_plan ? blueprint.music_plan.bpm : 'Auto';
+        let musicInfo = blueprint.music_track
+            ? `${blueprint.music_track.title} - ${blueprint.music_track.artist}`
+            : (blueprint.music_plan?.genre || 'Auto');
         let totalWords = blueprint.script ? blueprint.script.total_words : 'Auto';
 
         const message = `✨ *FACTORY BLUEPRINT APPROVED\\!*\n\n` +
@@ -585,7 +621,7 @@ async function handleTopicInput(chatId, data, instruction = null) {
             `_Body:_ ${escapeMarkdown(body_text)}\n` +
             `_CTA:_ ${escapeMarkdown(cta_text)}\n\n` +
             `🎬 *Visual Plan:* \`${visualCount} Scene dipetakan\`\n` +
-            `🎵 *Musik:* \`${musicBpm} bpm\` \\| Intensity Curve aktif\n\n` +
+            `🎵 *Musik:* \`${escapeMarkdown(musicInfo)}\` \n\n` +
             `Siap dirakit oleh Render Engine?`;
 
         // Format is critical for telegram: MarkdownV2 requires escaping properly.
@@ -675,6 +711,7 @@ async function executeVideoGeneration(chatId, messageId) {
                 language_code: 'id'
             },
             music: {
+                url: ai_blueprint.music_track?.url,
                 query: ai_blueprint.music_plan?.genre || ai_blueprint.meta?.music_genre || 'cinematic'
             },
             template_overrides: {

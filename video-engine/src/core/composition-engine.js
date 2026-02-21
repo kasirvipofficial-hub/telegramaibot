@@ -12,6 +12,7 @@ import WordHighlight from '../modules/text/word-highlight.js';
 import OpenAITTS from '../modules/voice/openai-tts.js';
 import HuggingFaceTTS from '../modules/voice/huggingface-tts.js';
 import EdgeTTS from '../modules/voice/edge-tts.js';
+import WhisperSTT from '../modules/voice/whisper-stt.js';
 
 
 // Resolution presets
@@ -211,6 +212,20 @@ export default {
                 await fs.copyFile(voSource, voFile);
             }
         }
+
+        // Transcription Fallback: If we have VO but NO timestamps, use Whisper-1
+        if (voFile && !job._wordTimestamps && (composition.voice_over?.word_highlight || (composition.text && composition.text.subtitle_engine === 'ass'))) {
+            try {
+                console.log(`Job ${job.id}: No timestamps found for VO, transcribing with Whisper-1...`);
+                onProgress({ stage: 'transcribing', message: 'Generating precision timestamps' });
+                const transcription = await WhisperSTT.transcribe(voFile);
+                job._wordTimestamps = transcription.timestamps;
+                console.log(`Job ${job.id}: Transcription complete, captured ${job._wordTimestamps.length} word-level timestamps`);
+            } catch (err) {
+                console.warn(`Job ${job.id}: Transcription failed: ${err.message}. Subtitles will use estimation.`);
+            }
+        }
+
         let musicFile = null;
         if (composition.music) {
             // Auto-search music if query provided without URL
@@ -236,7 +251,18 @@ export default {
                 const musicSrc = typeof composition.music === 'string' ? composition.music : composition.music.url;
 
                 if (musicSrc && musicSrc.startsWith('http')) {
-                    await downloadFile(musicSrc, musicRaw);
+                    try {
+                        await downloadFile(musicSrc, musicRaw);
+                    } catch (e) {
+                        if (composition.music.query) {
+                            console.warn(`Job ${job.id}: Provided music URL failed (${e.message}), attempting re-search for "${composition.music.query}"...`);
+                            const musicResult = await StockSearch.searchMusic(composition.music.query);
+                            await downloadFile(musicResult.url, musicRaw);
+                            console.log(`Job ${job.id}: Successfully found and downloaded fresh music from ${musicResult.provider}`);
+                        } else {
+                            throw e;
+                        }
+                    }
                 } else if (musicSrc) {
                     await fs.access(musicSrc).catch(() => { throw new Error(`Music not found: ${musicSrc}`); });
                     await fs.copyFile(musicSrc, musicRaw);
@@ -254,8 +280,10 @@ export default {
                             console.warn(`Job ${job.id}: Music file has no audio stream, skipping`);
                             musicFile = null;
                         } else {
-                            await runFFmpeg(['-y', '-i', musicRaw, '-vn', '-acodec', 'aac', '-b:a', '192k', musicFile], workDir);
-                            console.log(`Job ${job.id}: Audio extracted from music source`);
+                            // Support looping for short music files (like Deezer 30s previews)
+                            // We use -stream_loop -1 before -i to loop the input indefinitely
+                            await runFFmpeg(['-y', '-stream_loop', '-1', '-i', musicRaw, '-vn', '-acodec', 'aac', '-b:a', '192k', musicFile], workDir);
+                            console.log(`Job ${job.id}: Audio extracted and looped from music source`);
                         }
                     } catch (e) {
                         console.warn(`Job ${job.id}: Music audio extraction failed: ${e.message}, skipping`);
