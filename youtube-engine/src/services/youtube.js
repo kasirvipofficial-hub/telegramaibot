@@ -48,9 +48,14 @@ class YoutubeService {
     async downloadToFile(url, tempDir, filename) {
         const outputPath = path.resolve(tempDir, filename);
 
+        // Resolve absolute path to aria2c.exe which we downloaded to youtube-engine root
+        const aria2cPath = path.resolve(process.cwd(), 'aria2c.exe');
+
         const args = [
             ...this.getCommonArgs(),
             '-f', 'best[ext=mp4]/best',
+            '--downloader', aria2cPath,
+            '--downloader-args', `aria2c:"-x 16 -k 1M"`,
             '-o', outputPath,
             url
         ];
@@ -67,7 +72,7 @@ class YoutubeService {
             process.stdout.on('data', (data) => {
                 // Log progress optionally, or keep quiet
                 const out = data.toString();
-                if (out.includes('[download]')) {
+                if (out.includes('[download]') || out.includes('ETA:')) {
                     console.log(`[yt-dlp] ${out.trim()}`);
                 }
             });
