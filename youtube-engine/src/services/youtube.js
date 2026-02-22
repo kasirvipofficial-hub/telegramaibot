@@ -48,8 +48,10 @@ class YoutubeService {
     async downloadToFile(url, tempDir, filename) {
         const outputPath = path.resolve(tempDir, filename);
 
-        // Resolve absolute path to aria2c.exe which we downloaded to youtube-engine root
-        const aria2cPath = path.resolve(process.cwd(), 'aria2c.exe');
+        // Resolve absolute path to aria2c.exe which we downloaded to youtube-engine root (Windows)
+        // On Linux/Ubuntu, we assume `aria2c` is installed globally via `apt install aria2`
+        const isWindows = process.platform === 'win32';
+        const aria2cPath = isWindows ? path.resolve(process.cwd(), 'aria2c.exe') : 'aria2c';
 
         const args = [
             ...this.getCommonArgs(),
