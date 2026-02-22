@@ -14,6 +14,7 @@ const WEBHOOK_PATH = '/endpoint';
 const SECRET = process.env.ENV_BOT_SECRET;
 const ENGINE_BASE_URL = (process.env.ENV_ENGINE_URL || 'http://localhost:3000').replace(/\/$/, '');
 const YOUTUBE_ENGINE_URL = (process.env.ENV_YOUTUBE_ENGINE_URL || 'http://localhost:3002').replace(/\/$/, '');
+const SEMANTIC_ENGINE_URL = (process.env.SEMANTIC_ENGINE_URL || 'http://localhost:3003').replace(/\/$/, '');
 
 // LLM Configuration
 const openai = new OpenAI({
@@ -103,11 +104,12 @@ const PLATFORMS = {
 // --- Idempotency: Prevent duplicate delivery ---
 const deliveredJobs = new Set();
 function isAlreadyDelivered(jobId) {
-    if (deliveredJobs.has(jobId)) return true;
+    return deliveredJobs.has(jobId);
+}
+function markAsDelivered(jobId) {
     deliveredJobs.add(jobId);
     // Auto-clean after 1 hour to prevent memory leak
     setTimeout(() => deliveredJobs.delete(jobId), 3600000);
-    return false;
 }
 
 /**
@@ -193,7 +195,7 @@ async function sendVideo(chatId, videoUrl, caption = '') {
     }
 }
 
-async function deliverJobResult(chatId, jobId, result, status, error, queuePosition = 0) {
+async function deliverJobResult(chatId, jobId, result, status, error, queuePosition = 0, fullJob = null) {
     if (status === 'done' || status === 'failed') {
         if (isAlreadyDelivered(jobId)) {
             console.log(`[Delivery] skipping already delivered job: ${jobId}`);
@@ -202,32 +204,53 @@ async function deliverJobResult(chatId, jobId, result, status, error, queuePosit
     }
 
     if (status === 'queued') {
-        const msg = `⏳ *Masuk Antrian\\!*\\nVideo Anda berada di posisi ke\\-${queuePosition} dalam antrian\\. Mohon ditunggu ya\\.`;
+        const msg = `⏳ *Masuk Antrian\\!*\nVideo Anda berada di posisi ke\\-${queuePosition} dalam antrian\\. Mohon ditunggu ya\\.`;
         await sendMarkdownV2Text(chatId, msg);
     } else if (status === 'preparing') {
-        const msg = `🚀 *Giliran Anda\\!*\\nAntrian selesai, video Anda mulai dirakit sekarang\\.`;
+        const msg = `🚀 *Giliran Anda\\!*\nAntrian selesai, video Anda mulai dirakit sekarang\\.`;
         await sendMarkdownV2Text(chatId, msg);
     } else if (status === 'done' && result?.url) {
         try {
-            const meta = result?.meta || payload?.meta || payload?.composition?.meta || {};
+            // Priority: result.meta > fullJob.payload.composition.meta > fullJob.payload.meta
+            const meta = result?.meta ||
+                fullJob?.payload?.composition?.meta ||
+                fullJob?.payload?.meta || {};
+
             const title = meta.title || '';
             const description = meta.description || '';
-            const hashtags = Array.isArray(meta.hashtags) ? meta.hashtags.map(h => h.startsWith('#') ? h : `#${h}`).join(' ') : '';
+            const hashtags = Array.isArray(meta.hashtags) ?
+                meta.hashtags.map(h => h.startsWith('#') ? h : `#${h}`).join(' ') : '';
 
-            let captionText = `✅ *Video Anda siap\\!*\\nJob: \`${jobId}\`\\n\\n`;
-            if (title) captionText += `🎬 *Judul:*\\n\`${escapeMarkdown(title)}\`\\n\\n`;
-            if (description) captionText += `📝 *Deskripsi:*\\n\`${escapeMarkdown(description)}\`\\n\\n`;
-            if (hashtags) captionText += `🏷️ *Hashtags:*\\n\`${escapeMarkdown(hashtags)}\``;
+            let captionText = `✅ *Video Anda siap\\!*\nJob: \`${jobId}\`\n\n`;
+            if (title) captionText += `🎬 *Judul:*\n\`${escapeMarkdown(title)}\`\n\n`;
+            if (description) captionText += `📝 *Deskripsi:*\n\`${escapeMarkdown(description)}\`\n\n`;
+            if (hashtags) captionText += `🏷️ *Hashtags:*\n\`${escapeMarkdown(hashtags)}\``;
 
             const res = await sendVideo(chatId, result.url, captionText);
             if (!res.ok) throw new Error(res.error || 'Upload failed');
+            markAsDelivered(jobId);
         } catch (sendErr) {
-            // Fallback: send link instead
+            console.error(`[Delivery] Video upload failed, falling back to link:`, sendErr.message);
+            // Fallback: send link + metadata information
+            const meta = result?.meta ||
+                fullJob?.payload?.composition?.meta ||
+                fullJob?.payload?.meta || {};
+
+            const title = meta.title || '';
+            const hashtags = Array.isArray(meta.hashtags) ?
+                meta.hashtags.map(h => h.startsWith('#') ? h : `#${h}`).join(' ') : '';
+
             const safeLink = escapeMarkdown(result.url, '()[]');
-            await sendMarkdownV2Text(chatId, '✅ *Video siap\\!*\\n\\n🎬 [Download Video](' + safeLink + ')');
+            let fallbackMsg = `✅ *Video siap\\!*\n\n🎬 [Download Video](${safeLink})\n\n`;
+            if (title) fallbackMsg += `📌 *${escapeMarkdown(title)}*\n`;
+            if (hashtags) fallbackMsg += `🏷️ ${escapeMarkdown(hashtags)}`;
+
+            const res = await sendMarkdownV2Text(chatId, fallbackMsg);
+            if (res.ok) markAsDelivered(jobId);
         }
     } else if (status === 'failed') {
-        await sendMarkdownV2Text(chatId, escapeMarkdown(`❌ *Render Gagal:* ${error || 'Unknown'}`, '*'));
+        const res = await sendMarkdownV2Text(chatId, escapeMarkdown(`❌ *Render Gagal:* ${error || 'Unknown'}`, '*'));
+        if (res.ok) markAsDelivered(jobId);
     }
 }
 
@@ -397,7 +420,13 @@ OUTPUT STRUCTURE (STRICT JSON)
  */
 async function onUpdate(update) {
     if ('message' in update) {
-        await onMessage(update.message);
+        const message = update.message;
+        // Check if this is a file upload (document, photo, video, audio)
+        const state = userStates.get(message.chat.id);
+        if (state && state.state === 'AWAITING_SAVE_FILE' && !message.text) {
+            return handleSaveFile(message);
+        }
+        await onMessage(message);
     } else if ('callback_query' in update) {
         await onCallbackQuery(update.callback_query);
     }
@@ -425,6 +454,10 @@ async function onMessage(message) {
                 '/factory - Mulai proses Factory Workflow\n' +
                 '/yt [link] - Download video dari YouTube\n' +
                 '/status [id] - Cek status render\n' +
+                '/save - Simpan file ke Semantic Engine\n' +
+                '/search [query] - Pencarian semantik\n' +
+                '/myfiles - Lihat daftar file tersimpan\n' +
+                '/folders - Lihat daftar folder\n' +
                 '/cancel - Batalkan sesi aktif',
                 '`'));
     }
@@ -451,12 +484,38 @@ async function onMessage(message) {
         return handleYoutubeDownload(chatId, url);
     }
 
+    // ── Semantic Engine Commands ────────────────────────────
+    if (text === '/save') {
+        userStates.set(chatId, { state: 'AWAITING_SAVE_FILE', data: {} });
+        return sendMarkdownV2Text(chatId, '📁 *Simpan ke Semantic Engine*\n\nKirim file yang ingin disimpan \\(PDF, foto, video, audio, atau dokumen teks\\)\\.');
+    }
+
+    if (text.startsWith('/search')) {
+        const query = text.replace('/search', '').trim();
+        if (!query) return sendMarkdownV2Text(chatId, 'Masukkan kata kunci pencarian\\. Contoh: `/search machine learning`');
+        return handleSemanticSearch(chatId, query);
+    }
+
+    if (text === '/myfiles') {
+        return handleListFiles(chatId);
+    }
+
+    if (text === '/folders') {
+        return handleListFolders(chatId);
+    }
+
     if (state) {
         if (state.state === 'INPUT_TOPIC') {
             state.data.topic = text;
             userStates.set(chatId, state);
             return handleTopicInput(chatId, state.data);
         }
+    }
+
+    // ── Handle file uploads when awaiting save ─────────────
+    if (state && state.state === 'AWAITING_SAVE_FILE') {
+        // No text expected in this state
+        return sendMarkdownV2Text(chatId, '📎 Kirim file, bukan teks\\. Atau ketik `/cancel` untuk membatalkan\\.');
     }
 
     if (!text.startsWith('/')) {
@@ -894,6 +953,351 @@ async function handleYoutubeDownload(chatId, url) {
 }
 
 /**
+ * SEMANTIC ENGINE HANDLERS
+ */
+
+/**
+ * Download a file from Telegram servers and return { buffer, filename, mimeType }
+ */
+async function downloadTelegramFile(fileId) {
+    // Step 1: Get file path from Telegram
+    const fileInfoRes = await fetch(apiUrl('getFile', { file_id: fileId }));
+    const fileInfo = await fileInfoRes.json();
+    if (!fileInfo.ok || !fileInfo.result.file_path) {
+        throw new Error('Failed to get file path from Telegram');
+    }
+
+    const filePath = fileInfo.result.file_path;
+    const downloadUrl = `https://api.telegram.org/file/bot${TOKEN}/${filePath}`;
+
+    // Step 2: Download the file
+    const res = await fetch(downloadUrl);
+    if (!res.ok) throw new Error(`Failed to download file: ${res.statusText}`);
+
+    const arrayBuffer = await res.arrayBuffer();
+    const buffer = Buffer.from(arrayBuffer);
+    const filename = filePath.split('/').pop() || 'file';
+
+    return { buffer, filename, filePath };
+}
+
+/**
+ * Handle file save to semantic engine.
+ * Triggered when user sends a file while in AWAITING_SAVE_FILE state.
+ */
+async function handleSaveFile(message) {
+    const chatId = message.chat.id;
+
+    try {
+        let fileId, fileName, mimeType;
+
+        if (message.document) {
+            fileId = message.document.file_id;
+            fileName = message.document.file_name || 'document';
+            mimeType = message.document.mime_type || 'application/octet-stream';
+        } else if (message.photo) {
+            // Get highest resolution photo
+            const photo = message.photo[message.photo.length - 1];
+            fileId = photo.file_id;
+            fileName = `photo_${Date.now()}.jpg`;
+            mimeType = 'image/jpeg';
+        } else if (message.video) {
+            fileId = message.video.file_id;
+            fileName = message.video.file_name || `video_${Date.now()}.mp4`;
+            mimeType = message.video.mime_type || 'video/mp4';
+        } else if (message.audio) {
+            fileId = message.audio.file_id;
+            fileName = message.audio.file_name || `audio_${Date.now()}.mp3`;
+            mimeType = message.audio.mime_type || 'audio/mpeg';
+        } else if (message.voice) {
+            fileId = message.voice.file_id;
+            fileName = `voice_${Date.now()}.ogg`;
+            mimeType = message.voice.mime_type || 'audio/ogg';
+        } else {
+            return sendMarkdownV2Text(chatId, '❌ Tipe file tidak didukung\\. Kirim dokumen, foto, video, atau audio\\.');
+        }
+
+        await sendMarkdownV2Text(chatId, `📤 *Mengupload* \`${escapeMarkdown(fileName)}\` *ke Semantic Engine\\.\\.\\.*`);
+
+        // Download from Telegram
+        const { buffer } = await downloadTelegramFile(fileId);
+
+        // Upload to semantic engine
+        const formData = new FormData();
+        formData.append('user_id', String(chatId));
+        formData.append('file', new Blob([buffer], { type: mimeType }), fileName);
+
+        // Check if user specified a folder_id
+        const state = userStates.get(chatId);
+        if (state?.data?.folder_id) {
+            formData.append('folder_id', state.data.folder_id);
+        }
+
+        const res = await fetch(`${SEMANTIC_ENGINE_URL}/upload`, {
+            method: 'POST',
+            body: formData,
+        });
+
+        const result = await res.json();
+
+        userStates.delete(chatId);
+
+        if (res.ok) {
+            const msg = `✅ *File Tersimpan\\!*\n\n` +
+                `📄 *Nama:* \`${escapeMarkdown(fileName)}\`\n` +
+                `📁 *Folder:* \`${escapeMarkdown(result.folder_id || 'auto')}\`\n` +
+                `🔖 *ID:* \`${escapeMarkdown(result.id)}\`\n\n` +
+                `⏳ Sedang dianalisis\\.\\.\\. Ringkasan akan dikirim setelah selesai\\.`;
+            await sendMarkdownV2Text(chatId, msg);
+
+            // Fire-and-forget: poll until indexed, then send summary
+            pollFileAndSummarize(chatId, result.id, fileName);
+        } else {
+            throw new Error(result.error || 'Upload failed');
+        }
+    } catch (err) {
+        console.error('[Semantic] Save error:', err.message);
+        userStates.delete(chatId);
+        await sendMarkdownV2Text(chatId, escapeMarkdown(`❌ *Gagal menyimpan file:* ${err.message}`, '*'));
+    }
+}
+
+/**
+ * Poll file status until indexed, then send content summary to user.
+ * Runs in background (fire-and-forget).
+ */
+async function pollFileAndSummarize(chatId, fileId, fileName) {
+    const MAX_POLLS = 60; // 5 minutes max (60 × 5s)
+    const POLL_INTERVAL = 5000;
+
+    for (let i = 0; i < MAX_POLLS; i++) {
+        await new Promise(r => setTimeout(r, POLL_INTERVAL));
+
+        try {
+            const res = await fetch(`${SEMANTIC_ENGINE_URL}/files/${fileId}`);
+            if (!res.ok) continue;
+
+            const data = await res.json();
+            const status = data.file?.status;
+
+            if (status === 'indexed') {
+                const chunks = data.chunks || [];
+
+                if (chunks.length === 0) {
+                    await sendMarkdownV2Text(chatId,
+                        `📋 *Selesai diproses\\!*\n\n` +
+                        `📄 \`${escapeMarkdown(fileName)}\`\n` +
+                        `Tidak ada konten teks yang bisa diekstrak\\.`);
+                    return;
+                }
+
+                // Combine chunk texts for summary (max ~500 chars)
+                const allText = chunks.map(c => c.text).join(' ');
+                const preview = allText.length > 500
+                    ? allText.substring(0, 500) + '...'
+                    : allText;
+
+                const safePreview = escapeMarkdown(preview);
+                const safeName = escapeMarkdown(fileName);
+
+                const summaryMsg =
+                    `📋 *File Selesai Dianalisis\\!*\n\n` +
+                    `📄 *File:* \`${safeName}\`\n` +
+                    `📊 *Jumlah Chunk:* \`${chunks.length}\`\n\n` +
+                    `📝 *Ringkasan Isi:*\n\`${safePreview}\`\n\n` +
+                    `✅ Gunakan \`/search\` untuk mencari konten di dalam file ini\\.`;
+
+                await sendMarkdownV2Text(chatId, summaryMsg);
+                return;
+            }
+
+            if (status === 'failed') {
+                await sendMarkdownV2Text(chatId,
+                    `❌ *Gagal memproses file* \`${escapeMarkdown(fileName)}\`\\.\n` +
+                    `Silakan coba upload ulang dengan \`/save\`\\.`);
+                return;
+            }
+
+            // Still processing — continue polling
+        } catch (err) {
+            console.error('[Semantic] Poll error:', err.message);
+        }
+    }
+
+    // Timeout
+    await sendMarkdownV2Text(chatId,
+        `⚠️ *Timeout* memproses \`${escapeMarkdown(fileName)}\`\\.\n` +
+        `Gunakan \`/myfiles\` untuk cek status nanti\\.`);
+}
+
+/**
+ * Handle /search [query]
+ */
+async function handleSemanticSearch(chatId, query) {
+    try {
+        await sendMarkdownV2Text(chatId, `🔍 *Mencari:* \`${escapeMarkdown(query)}\`\n\n⏳ Mohon tunggu\\.\\.\\.`);
+
+        const res = await fetch(`${SEMANTIC_ENGINE_URL}/search`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ query, user_id: chatId, limit: 5 }),
+        });
+
+        const data = await res.json();
+
+        if (!res.ok) throw new Error(data.detail || data.error || 'Search failed');
+
+        const results = data.results || [];
+
+        if (results.length === 0) {
+            return sendMarkdownV2Text(chatId, '📭 *Tidak ada hasil ditemukan\\.*\n\nCoba kata kunci lain atau upload file terlebih dahulu dengan `/save`\\.');
+        }
+
+        // Build context from raw chunks for the LLM
+        const r2PublicUrl = process.env.R2_PUBLIC_URL || 'https://data.sarungtambalan.my.id';
+        const chunksContext = results.map((r, i) => {
+            const time = r.start_time !== null ? ` [waktu: ${r.start_time}s - ${r.end_time}s]` : '';
+            const page = r.page !== null ? ` [halaman: ${r.page}]` : '';
+            const fileUrl = `${r2PublicUrl}/${r.storage_key}`;
+            return `[Sumber ${i + 1}: "${r.file_name}" (URL: ${fileUrl}) (relevansi: ${(r.score * 100).toFixed(0)}%)${time}${page}]\n${r.text}`;
+        }).join('\n\n');
+
+        // Send to LLM for natural Indonesian summarization
+        try {
+            const model = process.env.LLM_MODEL || 'seed-2-0-mini-free';
+            const completion = await openai.chat.completions.create({
+                model,
+                messages: [
+                    {
+                        role: 'system',
+                        content: `Kamu adalah asisten pencarian cerdas berbahasa Indonesia. 
+Tugasmu: menjawab pertanyaan pengguna berdasarkan potongan data yang ditemukan dari file mereka.
+
+ATURAN:
+1. Jawab SELALU dalam Bahasa Indonesia yang natural dan mudah dipahami.
+2. WAJIB jadikan setiap nama file yang kamu sebutkan sebagai TAUTAN (Hyperlink Markdown) ke URL sumbernya.
+   Contoh format: [nama_file.pdf](https://data.sarungtambalan.my.id/...)
+3. Sebutkan timestamp/halaman jika tersedia di data.
+4. Jika data berisi deskripsi visual (dari video/foto), ceritakan kembali secara naratif.
+5. Jangan mengarang informasi — hanya gunakan data yang diberikan.
+6. Format jawaban dengan ringkas dan jelas.`
+                    },
+                    {
+                        role: 'user',
+                        content: `Pertanyaan: "${query}"\n\nData yang ditemukan:\n\n${chunksContext}`
+                    }
+                ],
+                max_tokens: 1024,
+            });
+
+            const answer = completion.choices[0]?.message?.content || '';
+
+            if (answer) {
+                // LLM output might have normal markdown links, we need to respect them but escape other chars around them
+                // However, Telegram MarkdownV2 requires careful escaping of links. Let's send it as plain Markdown (V1) or HTML, 
+                // but since we rely on MarkdownV2, we need to make sure the LLM's links don't break. 
+                // The safest way is to use parse_mode: 'Markdown' (V1) for this specific message 
+                // because escaping MarkdownV2 dynamic LLM output with links is notoriously error-prone.
+
+                // Let's fallback to standard unescaped Markdown (V1) for the LLM answer
+                const uniqueFilesCount = [...new Set(results.map(r => r.file_name))].length;
+                const msg = `📊 *Hasil Pencarian*\n\n${answer}\n\n_${results.length} sumber ditemukan dari ${uniqueFilesCount} file_`;
+
+                return fastify.telegram.sendMessage(chatId, msg, { parse_mode: 'Markdown', disable_web_page_preview: true })
+                    .catch(e => {
+                        console.error("Markdown V1 failed, trying HTML...", e.message);
+                        // If Markdown V1 fails, fallback to sending it without markdown
+                        return fastify.telegram.sendMessage(chatId, msg, { disable_web_page_preview: true });
+                    });
+            }
+        } catch (llmErr) {
+            console.error('[Semantic] LLM summarization failed, falling back to raw:', llmErr.message);
+        }
+
+        // Fallback: show raw results if LLM fails
+        let msg = `📊 *Hasil Pencarian* \\(${results.length} ditemukan\\):\n\n`;
+
+        results.forEach((r, i) => {
+            const score = (r.score * 100).toFixed(1);
+            const snippet = r.text.length > 100 ? r.text.substring(0, 100) + '...' : r.text;
+            msg += `*${i + 1}\\. ${escapeMarkdown(r.file_name)}* \\(${escapeMarkdown(score)}%\\)\n`;
+            msg += `\`${escapeMarkdown(snippet)}\`\n\n`;
+        });
+
+        return sendMarkdownV2Text(chatId, msg);
+    } catch (err) {
+        console.error('[Semantic] Search error:', err.message);
+        return sendMarkdownV2Text(chatId, escapeMarkdown(`❌ *Gagal mencari:* ${err.message}`, '*'));
+    }
+}
+
+/**
+ * Handle /myfiles
+ */
+async function handleListFiles(chatId) {
+    try {
+        const res = await fetch(`${SEMANTIC_ENGINE_URL}/files?user_id=${chatId}`);
+        const data = await res.json();
+
+        if (!res.ok) throw new Error(data.error || 'Failed to list files');
+
+        const files = data.files || [];
+
+        if (files.length === 0) {
+            return sendMarkdownV2Text(chatId, '📭 *Belum ada file tersimpan\\.*\n\nGunakan `/save` untuk menyimpan file pertama Anda\\.');
+        }
+
+        let msg = `📁 *File Anda* \\(${files.length}\\):\n\n`;
+
+        files.slice(0, 20).forEach((f, i) => {
+            const statusIcon = f.status === 'indexed' ? '✅' : f.status === 'processing' ? '⏳' : f.status === 'failed' ? '❌' : '🔄';
+            msg += `${i + 1}\\. ${statusIcon} \`${escapeMarkdown(f.name)}\`\n`;
+        });
+
+        if (files.length > 20) {
+            msg += `\n_\\.\\.\\. dan ${files.length - 20} file lainnya_`;
+        }
+
+        return sendMarkdownV2Text(chatId, msg);
+    } catch (err) {
+        console.error('[Semantic] List files error:', err.message);
+        return sendMarkdownV2Text(chatId, escapeMarkdown(`❌ *Gagal memuat file:* ${err.message}`, '*'));
+    }
+}
+
+/**
+ * Handle /folders
+ */
+async function handleListFolders(chatId) {
+    try {
+        const res = await fetch(`${SEMANTIC_ENGINE_URL}/folders?user_id=${chatId}`);
+        const data = await res.json();
+
+        if (!res.ok) throw new Error(data.error || 'Failed to list folders');
+
+        const folders = data.folders || [];
+
+        if (folders.length === 0) {
+            return sendMarkdownV2Text(chatId, '📭 *Belum ada folder\\.*\n\nFolder otomatis dibuat saat Anda upload file dengan `/save`\\.');
+        }
+
+        let msg = `📂 *Folder Anda* \\(${folders.length}\\):\n\n`;
+
+        folders.forEach((f, i) => {
+            const typeIcon = f.type === 'job' ? '💼' : '📁';
+            const fileCount = f.files?.[0]?.count ?? 0;
+            msg += `${i + 1}\\. ${typeIcon} *${escapeMarkdown(f.name)}* \\(${fileCount} file\\)\n`;
+            msg += `   Tipe: \`${escapeMarkdown(f.type)}\`${f.category ? ` \\| Kategori: \`${escapeMarkdown(f.category)}\`` : ''}\n\n`;
+        });
+
+        return sendMarkdownV2Text(chatId, msg);
+    } catch (err) {
+        console.error('[Semantic] List folders error:', err.message);
+        return sendMarkdownV2Text(chatId, escapeMarkdown(`❌ *Gagal memuat folder:* ${err.message}`, '*'));
+    }
+}
+
+/**
  * Background progress polling — sends stage updates to user
  */
 async function pollJobProgress(chatId, jobId) {
@@ -921,7 +1325,7 @@ async function pollJobProgress(chatId, jobId) {
                 await sendMarkdownV2Text(chatId, msg);
             }
             if (['done', 'failed', 'cancelled'].includes(job.status)) {
-                await deliverJobResult(chatId, jobId, job.result, job.status, job.error);
+                await deliverJobResult(chatId, jobId, job.result, job.status, job.error, 0, job);
                 break;
             }
         } catch (e) { /* ignore polling errors */ }
@@ -971,7 +1375,7 @@ fastify.post('/callback', async (request, reply) => {
         }
     } else {
         // Standard video composition callback
-        await deliverJobResult(chatId, jobId, result, status, error, data.queue_position);
+        await deliverJobResult(chatId, jobId, result, status, error, data.queue_position, data);
     }
     return { ok: true };
 });
