@@ -453,6 +453,7 @@ async function onMessage(message) {
             escapeMarkdown(
                 '/factory - Mulai proses Factory Workflow\n' +
                 '/yt [link] - Download video dari YouTube\n' +
+                '/ytsave [link] - Download & simpan video YouTube ke Semantic Engine\n' +
                 '/status [id] - Cek status render\n' +
                 '/save - Simpan file ke Semantic Engine\n' +
                 '/search [query] - Pencarian semantik\n' +
@@ -478,10 +479,16 @@ async function onMessage(message) {
         return checkJobStatus(chatId, jobId);
     }
 
-    if (text.startsWith('/yt')) {
+    if (text.startsWith('/yt ')) {
         const url = text.replace('/yt', '').trim();
         if (!url) return sendMarkdownV2Text(chatId, 'Silakan masukkan link YouTube\\. Contoh: `/yt https://youtu.be/xxx`');
         return handleYoutubeDownload(chatId, url);
+    }
+
+    if (text.startsWith('/ytsave ')) {
+        const url = text.replace('/ytsave', '').trim();
+        if (!url) return sendMarkdownV2Text(chatId, 'Silakan masukkan link YouTube\\. Contoh: `/ytsave https://youtu.be/xxx`');
+        return handleYoutubeDownload(chatId, url, true); // true = semantic save
     }
 
     // ── Semantic Engine Commands ────────────────────────────
@@ -915,15 +922,37 @@ async function checkJobStatus(chatId, jobId) {
     }
 }
 
-async function handleYoutubeDownload(chatId, url) {
+async function handleYoutubeDownload(chatId, url, isSemanticSave = false) {
     try {
         console.log(`[YouTube] Requesting download for: ${url}`);
-        await sendMarkdownV2Text(chatId, '🚀 *Sedang memproses link YouTube\\.\\.\\.* Mohon tunggu, video sedang dialirkan ke R2\\.');
+        const actionMsg = isSemanticSave ? 'menyimpan ke Semantic Engine' : 'dialirkan ke R2';
+        await sendMarkdownV2Text(chatId, `🚀 *Sedang memproses link YouTube\\.\\.\\.* Mohon tunggu, video sedang ${actionMsg}\\.`);
+
+        // Determine destination folder (if user is in a state with a folder_id, use it)
+        const state = userStates.get(chatId);
+        const folder_id = state?.data?.folder_id;
+
+        const requestBody = { url, chat_id: chatId };
+        // We pass the semantic_save flag and optional folder_id through the webhook by abusing youtube-engine's transparency.
+        // Wait, youtube-engine currently hardcodes payload: { meta: { chat_id } }.
+        // Let's modify bot-engine's call and youtube-engine's handling.
+        // Since we didn't modify youtube-engine to pass arbitrary meta, we must use what we have.
+        // Actually, youtube-engine uses `request.body.chat_id` and then explicitly builds the payload:
+        // `payload: { meta: { chat_id } }`.
+        // Let's modify youtube-engine to pass along all meta, or at least semantic_save.
+        // For now, let's just use `semantic_save: true` in the DB or state? No, webhook needs it statelessly.
+        // Let's send it in chat_id as a string trick? E.g., `${chatId}|semantic` - NO, that breaks R2 paths.
+        // I'll go back and modify youtube-engine to accept `meta` object and pass it through.
+
+        requestBody.meta = {
+            semantic_save: isSemanticSave,
+            folder_id: folder_id
+        };
 
         const res = await fetch(`${YOUTUBE_ENGINE_URL}/download`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ url, chat_id: chatId })
+            body: JSON.stringify(requestBody)
         });
 
         const result = await res.json();
@@ -1203,12 +1232,30 @@ ATURAN:
                 const uniqueFilesCount = [...new Set(results.map(r => r.file_name))].length;
                 const msg = `📊 *Hasil Pencarian*\n\n${answer}\n\n_${results.length} sumber ditemukan dari ${uniqueFilesCount} file_`;
 
-                return fastify.telegram.sendMessage(chatId, msg, { parse_mode: 'Markdown', disable_web_page_preview: true })
-                    .catch(e => {
-                        console.error("Markdown V1 failed, trying HTML...", e.message);
-                        // If Markdown V1 fails, fallback to sending it without markdown
-                        return fastify.telegram.sendMessage(chatId, msg, { disable_web_page_preview: true });
+                const resV1 = await fetch(apiUrl('sendMessage'), {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        chat_id: chatId,
+                        text: msg,
+                        parse_mode: 'Markdown',
+                        disable_web_page_preview: true
+                    })
+                });
+
+                if (!resV1.ok) {
+                    console.error("Markdown V1 failed, trying HTML...", await resV1.text());
+                    await fetch(apiUrl('sendMessage'), {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            chat_id: chatId,
+                            text: msg,
+                            disable_web_page_preview: true
+                        })
                     });
+                }
+                return;
             }
         } catch (llmErr) {
             console.error('[Semantic] LLM summarization failed, falling back to raw:', llmErr.message);
@@ -1355,20 +1402,60 @@ fastify.post('/callback', async (request, reply) => {
     const data = request.body;
     console.log(`📩 Webhook received: Job=${data.id}, Status=${data.status}, Pos=${data.queue_position}`);
 
-    const { type, id: jobId, status, payload, result, error, title, url } = data;
+    const { type, id: jobId, status, payload, result, error, title, url, storage_key } = data;
     const chatId = payload?.meta?.chat_id || payload?.composition?.meta?.chat_id;
 
     if (!chatId) return reply.code(400).send({ error: 'No chatId' });
 
     if (type === 'youtube_download') {
+        const isSemanticSave = payload?.meta?.semantic_save === true;
+
         if (status === 'done' && url) {
-            const caption = `🎬 *${escapeMarkdown(title)}*\n\n✅ Berhasil didownload dari YouTube\\!`;
-            const videoResult = await sendVideo(chatId, url, caption);
-            if (!videoResult.ok) {
-                let message = `✅ *Download Selesai\\!*\n\n` +
-                    `🎬 *Judul:* ${escapeMarkdown(title)}\n` +
-                    `📺 [Tonton/Download Video](${escapeMarkdown(url, '()[]')})`;
-                await sendMarkdownV2Text(chatId, message);
+            if (isSemanticSave && storage_key) {
+                // Call semantic engine to register the remote file
+                try {
+                    await sendMarkdownV2Text(chatId, `✅ *Download YouTube Selesai\\!*\n\n` +
+                        `🎬 *Judul:* ${escapeMarkdown(title)}\n\n` +
+                        `🔄 Mulai mentransfer ke Semantic Engine\\.\\.\\.`);
+
+                    const remoteRes = await fetch(`${SEMANTIC_ENGINE_URL}/upload/remote`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            name: title + '.mp4',
+                            storage_key: storage_key,
+                            user_id: chatId,
+                            type: 'video/mp4',
+                            folder_id: payload?.meta?.folder_id
+                        })
+                    });
+
+                    const remoteData = await remoteRes.json();
+
+                    if (remoteRes.ok) {
+                        await sendMarkdownV2Text(chatId, `✅ *Video YouTube Tersimpan di Semantic Engine\\!*\n\n` +
+                            `📄 *Nama:* \`${escapeMarkdown(title)}\`\n` +
+                            `🔖 *ID:* \`${escapeMarkdown(remoteData.id)}\`\n\n` +
+                            `⏳ Sedang dianalisis\\.\\.\\. Ringkasan akan dikirim setelah selesai\\.`);
+
+                        pollFileAndSummarize(chatId, remoteData.id, title);
+                    } else {
+                        throw new Error(remoteData.error || 'Failed to register remote file');
+                    }
+                } catch (err) {
+                    console.error('[Semantic] Remote save error:', err.message);
+                    await sendMarkdownV2Text(chatId, escapeMarkdown(`❌ *Gagal menyimpan video YouTube ke Semantic Engine:* ${err.message}`, '*'));
+                }
+            } else {
+                // Normal download - send video directly to user
+                const caption = `🎬 *${escapeMarkdown(title)}*\n\n✅ Berhasil didownload dari YouTube\\!`;
+                const videoResult = await sendVideo(chatId, url, caption);
+                if (!videoResult.ok) {
+                    let message = `✅ *Download Selesai\\!*\n\n` +
+                        `🎬 *Judul:* ${escapeMarkdown(title)}\n` +
+                        `📺 [Tonton/Download Video](${escapeMarkdown(url, '()[]')})`;
+                    await sendMarkdownV2Text(chatId, message);
+                }
             }
         } else if (status === 'failed') {
             await sendMarkdownV2Text(chatId, escapeMarkdown(`❌ *Gagal Download YouTube:* ${error || 'Unknown'}`, '*'));

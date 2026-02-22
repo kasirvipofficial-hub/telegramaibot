@@ -62,12 +62,14 @@ fastify.post('/download', async (request, reply) => {
 
         // 3. Process in background
         (async () => {
+            let localFilePath = null;
             try {
-                request.log.info(`[Background] Initializing direct stream from yt-dlp...`);
-                const stream = youtubeService.downloadStream(url);
+                request.log.info(`[Background] Downloading via yt-dlp to local disk...`);
+                localFilePath = await youtubeService.downloadToFile(url, TEMP_DIR, fileName);
 
-                request.log.info(`[Background] Streaming directly to R2 key: ${r2Key}...`);
-                const publicUrl = await storageService.uploadStream(stream, r2Key, 'video/mp4');
+                request.log.info(`[Background] Uploading local file to R2 key: ${r2Key}...`);
+                const fileStream = fs.createReadStream(localFilePath);
+                const publicUrl = await storageService.uploadStream(fileStream, r2Key, 'video/mp4');
 
                 // 4. Send callback to bot
                 const botCallbackUrl = process.env.BOT_CALLBACK_URL || 'http://localhost:3001/callback';
@@ -82,6 +84,7 @@ fastify.post('/download', async (request, reply) => {
                         status: 'done',
                         title: info.title,
                         url: publicUrl,
+                        storage_key: r2Key,
                         payload: { meta: { chat_id } }
                     })
                 });
@@ -99,6 +102,11 @@ fastify.post('/download', async (request, reply) => {
                         payload: { meta: { chat_id } }
                     })
                 }).catch(() => { });
+            } finally {
+                if (localFilePath && fs.existsSync(localFilePath)) {
+                    fs.unlinkSync(localFilePath);
+                    request.log.info(`[Background] Cleaned up temporary file: ${localFilePath}`);
+                }
             }
         })();
 

@@ -167,4 +167,68 @@ export async function uploadRoute(app: FastifyInstance): Promise<void> {
             return reply.status(500).send({ error: "Upload failed" });
         }
     });
+
+    /**
+     * POST /upload/remote
+     * 
+     * Registers an external file (e.g., from youtube-engine) that is 
+     * already stored in R2, bypassing the actual file buffer upload.
+     */
+    app.post<{
+        Body: { name: string; storage_key: string; user_id: number; type?: string; folder_id?: string }
+    }>("/upload/remote", async (request, reply) => {
+        try {
+            let { name, storage_key, user_id, type = "video/mp4", folder_id } = request.body;
+
+            if (!name || !storage_key || !user_id) {
+                return reply.status(400).send({ error: "Missing required fields" });
+            }
+
+            const supabase = getSupabase();
+
+            // 1. Ensure user exists
+            await supabase.from("users").upsert(
+                { id: user_id },
+                { onConflict: "id" }
+            );
+
+            // 2. Resolve folder
+            if (!folder_id) {
+                const category = mimeToCategory(type);
+                folder_id = await ensureFileTypeFolder(user_id, category);
+            }
+
+            // 3. Insert file record
+            const fileId = uuidv4();
+            const { error: dbError } = await supabase.from("files").insert({
+                id: fileId,
+                user_id: user_id,
+                folder_id: folder_id,
+                name: name,
+                storage_key: storage_key,
+                type: type,
+                status: "pending",
+            });
+
+            if (dbError) {
+                log.error("Failed to insert remote file record", { error: dbError.message });
+                return reply.status(500).send({ error: "Database insert failed" });
+            }
+
+            log.info("Remote file registered", { fileId, user_id, folderId: folder_id, name });
+
+            return reply.status(201).send({
+                id: fileId,
+                user_id: user_id,
+                folder_id: folder_id,
+                name: name,
+                storage_key: storage_key,
+                status: "pending",
+            });
+
+        } catch (err) {
+            log.error("Remote upload failed", { error: String(err) });
+            return reply.status(500).send({ error: "Remote upload failed" });
+        }
+    });
 }

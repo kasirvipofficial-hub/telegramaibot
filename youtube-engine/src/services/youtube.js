@@ -43,24 +43,43 @@ class YoutubeService {
     }
 
     /**
-     * returns a Readable stream of the video content
+     * Downloads the video to the temp directory and returns the file path.
      */
-    downloadStream(url) {
+    async downloadToFile(url, tempDir, filename) {
+        const outputPath = path.resolve(tempDir, filename);
+
         const args = [
             ...this.getCommonArgs(),
             '-f', 'best[ext=mp4]/best',
-            '-o', '-',
+            '-o', outputPath,
             url
         ];
 
-        console.log(`Spawning: ${YT_DLP_PATH} ${args.join(' ')}`);
-        const process = spawn(YT_DLP_PATH, args);
+        console.log(`Executing: ${YT_DLP_PATH} ${args.join(' ')}`);
 
-        process.stderr.on('data', (data) => {
-            console.error(`[yt-dlp] ${data.toString()}`);
+        return new Promise((resolve, reject) => {
+            const process = spawn(YT_DLP_PATH, args);
+
+            process.stderr.on('data', (data) => {
+                console.error(`[yt-dlp error] ${data.toString()}`);
+            });
+
+            process.stdout.on('data', (data) => {
+                // Log progress optionally, or keep quiet
+                const out = data.toString();
+                if (out.includes('[download]')) {
+                    console.log(`[yt-dlp] ${out.trim()}`);
+                }
+            });
+
+            process.on('close', (code) => {
+                if (code === 0) {
+                    resolve(outputPath);
+                } else {
+                    reject(new Error(`yt-dlp exited with code ${code}`));
+                }
+            });
         });
-
-        return process.stdout;
     }
 }
 
