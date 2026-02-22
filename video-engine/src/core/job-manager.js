@@ -79,8 +79,19 @@ class JobManager extends EventEmitter {
             logs: []
         };
 
+        // Calculate initial queue position (1-based)
+        const queuedJobs = Array.from(this.jobs.values()).filter(j => j.status === 'queued');
+        job.queue_position = queuedJobs.length + 1;
+
         this.jobs.set(id, job);
         await this.persistJob(job);
+
+        // Notify immediately if queued (not being processed right away)
+        // If concurrency allows, it will immediately switch to 'preparing' via processQueue()
+        if (job.status === 'queued' && job.payload.webhook_url) {
+            this.sendWebhookWithRetry(job.payload.webhook_url, job);
+        }
+
         this.processQueue();
         return id;
     }
@@ -120,6 +131,11 @@ class JobManager extends EventEmitter {
 
         await this.persistJob(job);
 
+        // Notify bot-engine about any status change
+        if (job.payload.webhook_url) {
+            this.sendWebhookWithRetry(job.payload.webhook_url, job);
+        }
+
         if (['done', 'failed'].includes(status)) {
             // Only decrement if this job was actively running
             if (['processing', 'preparing'].includes(previousStatus)) {
@@ -135,13 +151,8 @@ class JobManager extends EventEmitter {
                 this.metrics.total_time_ms += duration;
             }
 
-            // Webhook Callback with retry
-            if (job.payload.webhook_url) {
-                this.sendWebhookWithRetry(job.payload.webhook_url, job);
-            }
-
-            // DO NOT cleanup immediately on done/failed so the user can download the result.
-            // Cleanup is handled by the 24h cleanupOldJobs timer.
+            // Also notify other queued jobs that their position has changed
+            this.notifyQueueUpdate();
 
             this.processQueue();
         } else if (status === 'cancelled') {
@@ -159,6 +170,27 @@ class JobManager extends EventEmitter {
             path.join(config.paths.jobs, `${job.id}.json`),
             JSON.stringify(job, null, 2)
         );
+    }
+
+    /**
+     * Notify all queued jobs about their new position
+     */
+    async notifyQueueUpdate() {
+        const queuedJobs = Array.from(this.jobs.values())
+            .filter(j => j.status === 'queued')
+            .sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+
+        for (let i = 0; i < queuedJobs.length; i++) {
+            const job = queuedJobs[i];
+            const newPos = i + 1;
+            if (job.queue_position !== newPos) {
+                job.queue_position = newPos;
+                await this.persistJob(job);
+                if (job.payload.webhook_url) {
+                    this.sendWebhookWithRetry(job.payload.webhook_url, job);
+                }
+            }
+        }
     }
 
     async processQueue() {
@@ -304,7 +336,6 @@ class JobManager extends EventEmitter {
         for (let attempt = 1; attempt <= MAX_WEBHOOK_RETRIES; attempt++) {
             try {
                 console.log(`Webhook for job ${job.id} → ${url} (attempt ${attempt})`);
-                const { fetch } = await import('undici');
                 const res = await fetch(url, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },

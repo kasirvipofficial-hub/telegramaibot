@@ -211,6 +211,16 @@ export default {
                 });
                 await fs.copyFile(voSource, voFile);
             }
+
+            // Measure VO duration to ensure final video sync
+            try {
+                const probe = await probeFile(voFile);
+                job._voDuration = parseFloat(probe.format?.duration || 0);
+                console.log(`Job ${job.id}: Measured VO duration: ${job._voDuration}s`);
+            } catch (err) {
+                console.warn(`Job ${job.id}: Failed to probe VO duration: ${err.message}`);
+                job._voDuration = 0;
+            }
         }
 
         // Transcription Fallback: If we have VO but NO timestamps, use Whisper-1
@@ -644,8 +654,8 @@ export default {
             outputFile
         ];
 
-        // Debug log
-        await fs.writeFile(path.join(process.cwd(), 'ffmpeg_args_debug.txt'), JSON.stringify(args, null, 2));
+        // Debug log (saved to workDir to avoid triggering node --watch in project root)
+        await fs.writeFile(path.join(workDir, 'ffmpeg_args_debug.txt'), JSON.stringify(args, null, 2));
 
 
         console.log(`[FFMPEG_DEBUG] Full Args: ${JSON.stringify(args)}`);

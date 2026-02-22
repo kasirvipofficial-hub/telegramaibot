@@ -193,16 +193,33 @@ async function sendVideo(chatId, videoUrl, caption = '') {
     }
 }
 
-async function deliverJobResult(chatId, jobId, result, status, error) {
-    if (isAlreadyDelivered(jobId)) {
-        console.log(`[Delivery] skipping already delivered job: ${jobId}`);
-        return;
+async function deliverJobResult(chatId, jobId, result, status, error, queuePosition = 0) {
+    if (status === 'done' || status === 'failed') {
+        if (isAlreadyDelivered(jobId)) {
+            console.log(`[Delivery] skipping already delivered job: ${jobId}`);
+            return;
+        }
     }
 
-    if (status === 'done' && result?.url) {
+    if (status === 'queued') {
+        const msg = `⏳ *Masuk Antrian\\!*\\nVideo Anda berada di posisi ke\\-${queuePosition} dalam antrian\\. Mohon ditunggu ya\\.`;
+        await sendMarkdownV2Text(chatId, msg);
+    } else if (status === 'preparing') {
+        const msg = `🚀 *Giliran Anda\\!*\\nAntrian selesai, video Anda mulai dirakit sekarang\\.`;
+        await sendMarkdownV2Text(chatId, msg);
+    } else if (status === 'done' && result?.url) {
         try {
-            const caption = escapeMarkdown('✅ Video Anda siap! Job: ' + jobId);
-            const res = await sendVideo(chatId, result.url, caption);
+            const meta = result?.meta || payload?.meta || payload?.composition?.meta || {};
+            const title = meta.title || '';
+            const description = meta.description || '';
+            const hashtags = Array.isArray(meta.hashtags) ? meta.hashtags.map(h => h.startsWith('#') ? h : `#${h}`).join(' ') : '';
+
+            let captionText = `✅ *Video Anda siap\\!*\\nJob: \`${jobId}\`\\n\\n`;
+            if (title) captionText += `🎬 *Judul:*\\n\`${escapeMarkdown(title)}\`\\n\\n`;
+            if (description) captionText += `📝 *Deskripsi:*\\n\`${escapeMarkdown(description)}\`\\n\\n`;
+            if (hashtags) captionText += `🏷️ *Hashtags:*\\n\`${escapeMarkdown(hashtags)}\``;
+
+            const res = await sendVideo(chatId, result.url, captionText);
             if (!res.ok) throw new Error(res.error || 'Upload failed');
         } catch (sendErr) {
             // Fallback: send link instead
@@ -263,58 +280,98 @@ async function findMusicDeezer(genre) {
  */
 async function brainstormWithAI(data) {
     console.log(`🧠 AI Brainstorming for topic: ${data.topic}`);
-    const prompt = `You are a strict internal AI Video Factory Engine.
-DO NOT OUTPUT ANYTHING EXCEPT THE JSON MATCHING THE EXACT STRUCTURE BELOW.
-Ensure each asset (visual, music) has clear timing and roles synced with the Voice Over script.
-Strict adherence to duration (${data.duration} seconds) is required.
+    const prompt = `
+You are an internal deterministic AI Video Composition Engine for Indonesian content.
 
-Input Variables:
-- Purpose: ${data.purpose}
-- Platform: ${data.platform} (Ratio: ${PLATFORMS[data.platform].ratio}, Resolution: ${PLATFORMS[data.platform].resolution})
-- Duration: ${data.duration} seconds
-- Emotion: ${data.emotion}
-- Music Genre: ${data.music_genre}
-- Visual Style: ${data.style}
-- Topic: ${data.topic}
+Your task is to generate ONE valid JSON blueprint.
+Output MUST be raw JSON only.
+No markdown, No commentary, No explanation.
 
-Calculate max words based on duration (assume avg speaking rate of 2.5 words/sec).
-Output Structure:
+====================================================
+GLOBAL HARD RULES (CRITICAL)
+====================================================
+1. Total duration MUST be exactly ${data.duration} seconds.
+2. No time overlap. No time gaps. Sequential timing only.
+3. hook + body + cta MUST fully cover the entire timeline.
+4. All visible text (title, description, script) MUST be in BAHASA INDONESIA.
+5. All numbers in narration text MUST be written in words (e.g., "dua puluh", NOT "20").
+6. visual_plan.keywords MUST be in English (for Pexels API).
+7. Each visual scene must contain segment_type: "hook" | "body" | "cta".
+8. AVAILABLE LUTs: "AmberLight", "Filmmaker". Choose one for each scene.
+9. DESCRIPTION DISTINCTNESS: The "description" in meta MUST be an engaging summary for social media captions. It MUST be distinct and NOT a copy of the narration script.
+
+====================================================
+VISUAL VARIETY & PACING RULES (THE CORE)
+====================================================
+1. CRITICAL: visual_plan MUST NOT BE EMPTY.
+2. MINIMUM SCENES: 
+   - For 15-30s: Min 6 scenes.
+   - For 31-60s: Min 10 scenes.
+   - For 61s+: Min 15 scenes.
+3. SCENE DURATION: Each scene should ideally last 3 - 6 seconds. NEVER make one scene longer than 10 seconds.
+4. KEYWORD QUALITY: Provide 3-5 specific, cinematic, and high-quality English keywords per scene. Mix "subject", "action", and "environment" (e.g., "man running forest sunset cinematic").
+5. ALIGNMENT: Visual scenes MUST follow script timing exactly. 
+   - If HOOK is 0-3s, the first visual scene(s) MUST also cover exactly 0-3s with segment_type="hook".
+
+====================================================
+INPUT PARAMETERS
+====================================================
+Purpose: ${data.purpose}
+Platform: ${data.platform}
+Duration: ${data.duration}s
+Emotion: ${data.emotion}
+Visual Style: ${data.style}
+Topic: ${data.topic}
+
+====================================================
+SCRIPT STRUCTURE
+====================================================
+HOOK (0-3s): Pattern interrupt.
+BODY (3s to [Total-${data.duration < 30 ? 3 : 5}]s): Main content.
+CTA (Final 3-5s): Call to action. End must be ${data.duration}.
+Speaking rate: 2.5 words/sec.
+
+====================================================
+OUTPUT STRUCTURE (STRICT JSON)
+====================================================
 {
   "meta": {
-    "title": "Short catchy title",
-    "description": "Engaging social media description with hashtags",
+    "title": "Indonesian title",
+    "description": "Indonesian description",
+    "hashtags": ["list", "of", "tags"],
     "platform": "${data.platform}",
     "duration": ${data.duration},
-    "resolution": "${PLATFORMS[data.platform].resolution}",
-    "emotion": "${data.emotion}",
-    "music_genre": "${data.music_genre}"
+    "emotion": "${data.emotion}"
   },
   "script": {
-    "total_words": <calculate_this>,
+    "total_words": 0,
     "segments": [
-      { "type": "hook", "start": 0, "end": 3, "text": "Hook text..." },
-      { "type": "body", "start": 3, "end": <calc_end>, "text": "Body text..." },
-      { "type": "cta", "start": <calc_start>, "end": ${data.duration}, "text": "CTA text..." }
+      { "type": "hook", "start": 0, "end": 3, "duration": 3, "text": "" },
+      { "type": "body", "start": 3, "end": 0, "duration": 0, "text": "" },
+      { "type": "cta", "start": 0, "end": ${data.duration}, "duration": 0, "text": "" }
     ]
   },
   "visual_plan": [
-    { "scene": 1, "start": 0, "end": <scene_end>, "duration": <calc_duration>, "keywords": ["kw1", "kw2"], "motion": "<slow_zoom|pan_left|pan_right|zoom_out>", "lut": "warm" },
-    ...
+    {
+      "scene": 1,
+      "segment_type": "hook",
+      "start": 0,
+      "end": 0,
+      "duration": 0,
+      "keywords": ["cinematic", "high quality"],
+      "motion": "slow_zoom",
+      "lut": "AmberLight"
+    }
   ],
   "music_plan": {
-    "bpm": <calc_bpm>,
+    "genre": "${data.music_genre}",
+    "bpm": 0,
     "curve": [
       { "time": 0, "intensity": 0.3 },
-      { "time": <mid>, "intensity": 0.6 },
-      { "time": ${data.duration}, "intensity": 0.8 }
+      { "time": ${data.duration}, "intensity": 0.85 }
     ]
   },
-  "subtitle_style": {
-    "font": "Montserrat",
-    "weight": "bold",
-    "color": "#FFFFFF",
-    "highlight": true
-  }
+  "subtitle_style": { "font": "Montserrat", "weight": "bold", "color": "#FFFFFF", "highlight": true }
 }
 `;
 
@@ -667,12 +724,22 @@ async function executeVideoGeneration(chatId, messageId) {
     }
 
     let mappedVisualPlan = [];
-    if (ai_blueprint.visual_plan) {
+    if (ai_blueprint.visual_plan && Array.isArray(ai_blueprint.visual_plan) && ai_blueprint.visual_plan.length > 0) {
         mappedVisualPlan = ai_blueprint.visual_plan.map(scene => ({
-            query: scene.keywords.join(' '),
-            duration: scene.duration, // specific duration
-            transition: { type: 'fade', duration: 0.5 } // Standard
+            query: (scene.keywords && Array.isArray(scene.keywords) && scene.keywords.length > 0)
+                ? scene.keywords.join(' ')
+                : (ai_blueprint.meta?.title || "scenic background"),
+            duration: scene.duration || 5, // fallback 5s
+            transition: { type: 'fade', duration: 0.5 }
         }));
+    } else {
+        // Fallback: at least one clip if AI fails
+        console.warn(`[Warning] No visual_plan found in blueprint for ${chatId}, using fallback.`);
+        mappedVisualPlan = [{
+            query: ai_blueprint.meta?.title || "inspiring background",
+            duration: data.duration || 30,
+            transition: { type: 'fade', duration: 0.5 }
+        }];
     }
 
     const payload = {
@@ -681,7 +748,12 @@ async function executeVideoGeneration(chatId, messageId) {
         composition: {
             template_id: 'shorts_modern_v1', // standard template override
             output_format: platform,
-            meta: { chat_id: chatId, title: ai_blueprint.meta?.title },
+            meta: {
+                chat_id: chatId,
+                title: ai_blueprint.meta?.title,
+                description: ai_blueprint.meta?.description,
+                hashtags: ai_blueprint.meta?.hashtags
+            },
             // Parse AI Visual Plan precisely to clips
             clips: mappedVisualPlan,
             // Blueprint 5 specifications mapped to our engine compatible json schema
@@ -723,6 +795,9 @@ async function executeVideoGeneration(chatId, messageId) {
     };
 
     try {
+        console.log(`📡 Transmitting Job to Engine: ${ENGINE_BASE_URL}/jobs`);
+        console.log(`📦 Payload Preview: ${JSON.stringify(payload).substring(0, 500)}...`);
+
         const res = await fetch(`${ENGINE_BASE_URL}/jobs`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -853,7 +928,8 @@ async function pollJobProgress(chatId, jobId) {
     }
 }
 
-fastify.get('/', async () => ({ status: 'online', service: 'bot-engine-factory' }));
+fastify.get('/health', async () => ({ status: 'ok' }));
+fastify.get('/', async () => ({ status: 'ok', service: 'bot-engine-factory' }));
 
 fastify.post(WEBHOOK_PATH, async (request, reply) => {
     // Security: Validate Telegram webhook secret
@@ -873,6 +949,8 @@ fastify.post(WEBHOOK_PATH, async (request, reply) => {
 
 fastify.post('/callback', async (request, reply) => {
     const data = request.body;
+    console.log(`📩 Webhook received: Job=${data.id}, Status=${data.status}, Pos=${data.queue_position}`);
+
     const { type, id: jobId, status, payload, result, error, title, url } = data;
     const chatId = payload?.meta?.chat_id || payload?.composition?.meta?.chat_id;
 
@@ -893,7 +971,7 @@ fastify.post('/callback', async (request, reply) => {
         }
     } else {
         // Standard video composition callback
-        await deliverJobResult(chatId, jobId, result, status, error);
+        await deliverJobResult(chatId, jobId, result, status, error, data.queue_position);
     }
     return { ok: true };
 });

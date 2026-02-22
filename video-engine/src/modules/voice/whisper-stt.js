@@ -1,6 +1,4 @@
 import fs_sync from 'fs';
-import pkg from 'undici';
-const { fetch, Blob, FormData } = pkg;
 
 /**
  * Service to interact with Whisper-1 (STT) via Sumopod API

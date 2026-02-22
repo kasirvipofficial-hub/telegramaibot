@@ -1,5 +1,4 @@
 
-import { fetch } from 'undici';
 
 const KIE_API_BASE = 'https://api.kie.ai/api/v1';
 
